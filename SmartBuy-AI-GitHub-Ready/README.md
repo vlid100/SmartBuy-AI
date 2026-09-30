@@ -1,4 +1,4 @@
-# SmartBuy AI v0.7.2 — Tracking reliability fix
+# SmartBuy AI v0.7.3 — Tracking reliability fix
 
 Ця версія виправляє помилку `TypeError: fetch failed` під час ручної перевірки відстежуваних товарів на Vercel.
 
@@ -10,3 +10,7 @@
 - відповідь API повертає точніші статуси `оновлено / не знайдено / помилка`.
 
 Налаштування Supabase та Environment Variables змінювати не потрібно.
+
+
+## v0.7.3 manual tracking fix
+Ручна перевірка цін використовує той самий `/api/search`, що й основний пошук SmartBuy, а потім зберігає оновлений товар через `/api/watchlist`. Це прибирає залежність ручної кнопки від проблемного довгого `/api/tracking/refresh`. Vercel Cron залишається окремим серверним best-effort механізмом.

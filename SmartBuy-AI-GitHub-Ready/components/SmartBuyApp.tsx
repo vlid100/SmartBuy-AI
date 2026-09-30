@@ -253,51 +253,116 @@ export default function SmartBuyApp() {
     await saveWatchToCloud(product, targetPrices[product.id]);
   }
 
+  function trackingTokens(value: string) {
+    const ignored = new Set(["купити", "ціна", "ціни", "новий", "нова", "нове", "бв", "бу", "україна", "ua", "gb", "гб"]);
+    return value.toLowerCase().replace(/[’'`]/g, "").replace(/[^a-zа-яіїєґ0-9+.-]+/gi, " ").split(/\s+/).filter(token => token.length > 1 && !ignored.has(token));
+  }
+
+  function trackingSimilarity(left: string, right: string) {
+    const a = new Set(trackingTokens(left));
+    const b = new Set(trackingTokens(right));
+    if (!a.size || !b.size) return 0;
+    let common = 0;
+    for (const token of a) if (b.has(token)) common += 1;
+    const precision = common / Math.max(1, Math.min(a.size, b.size));
+    const union = new Set([...a, ...b]).size;
+    return precision * 0.75 + (common / Math.max(1, union)) * 0.25;
+  }
+
+  function bestTrackingMatch(stored: Product, candidates: Product[]) {
+    let best: Product | null = null;
+    let bestScore = 0;
+    for (const candidate of candidates) {
+      const score = trackingSimilarity(stored.title, candidate.title);
+      if (score > bestScore) { bestScore = score; best = candidate; }
+    }
+    return bestScore >= 0.42 ? best : null;
+  }
+
   async function refreshTrackedNow() {
     if (!syncKey || !cloudEnabled || trackingRefresh) return;
-    const tracked = Object.values(watching);
+    const tracked: Product[] = Object.values(watching);
     if (!tracked.length) return;
     setTrackingRefresh(true);
     setTrackingMessage(`Перевіряю 0/${tracked.length}…`);
     try {
       let checked = 0, updated = 0, notFound = 0, errors = 0;
       const failures: string[] = [];
+      const refreshedLocal: Record<string, Product> = { ...watching };
 
-      // Run requests sequentially. Vercel was intermittently failing when the
-      // browser launched several tracking functions at exactly the same time.
+      // v0.7.3: manual tracking reuses /api/search — the same route already used
+      // by the working SmartBuy search. This avoids a second long-running Vercel
+      // tracking function and makes manual checks much more reliable.
       for (let index = 0; index < tracked.length; index += 1) {
         const product = tracked[index];
+        const checkedAt = new Date().toISOString();
         try {
-          const response = await fetch("/api/tracking/refresh", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ token: syncKey, productKey: product.id }),
-          });
-          const data = await response.json().catch(() => ({}));
-          if (!response.ok) {
-            failures.push(String(data?.detail || data?.error || `HTTP ${response.status}`));
-            errors += 1;
+          const params = new URLSearchParams({ q: product.title, market: "all" });
+          const response = await fetch(`/api/search?${params.toString()}`, { cache: "no-store" });
+          const data: SearchApiResponse = await response.json().catch(() => ({ results: [] } as unknown as SearchApiResponse));
+          if (!response.ok) throw new Error(`search_http_${response.status}`);
+
+          const match = bestTrackingMatch(product, Array.isArray(data.results) ? data.results : []);
+          checked += 1;
+          if (!match) {
+            notFound += 1;
+            const updatedProduct: Product = {
+              ...product,
+              tracking: {
+                lastCheckedAt: checkedAt,
+                status: "not_found",
+                message: "Пошук відповів, але точну модель цього разу не вдалося впевнено зіставити.",
+                previousBestPrice: product.bestPrice,
+                lastSeenPrice: product.bestPrice,
+              },
+            };
+            refreshedLocal[product.id] = updatedProduct;
+            await fetch("/api/watchlist", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ token: syncKey, product: updatedProduct, targetPrice: targetPrices[product.id] }),
+            }).catch(() => undefined);
           } else {
-            checked += Number(data.checked || 0);
-            updated += Number(data.updated || 0);
-            notFound += Number(data.notFound || 0);
-            errors += Number(data.errors || 0);
-            const firstResult = Array.isArray(data.results) ? data.results[0] : null;
-            if (firstResult?.detail) failures.push(String(firstResult.detail));
+            updated += 1;
+            const updatedProduct: Product = {
+              ...match,
+              id: product.id,
+              title: product.title,
+              category: product.category || match.category,
+              image: match.image || product.image,
+              imageUrl: match.imageUrl || product.imageUrl,
+              tracking: {
+                lastCheckedAt: checkedAt,
+                status: "ok",
+                message: `Перевірено через SmartBuy Search: ${match.offers.length} пропозицій.`,
+                previousBestPrice: product.bestPrice,
+                lastSeenPrice: match.bestPrice,
+              },
+            };
+            refreshedLocal[product.id] = updatedProduct;
+            const saveResponse = await fetch("/api/watchlist", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ token: syncKey, product: updatedProduct, targetPrice: targetPrices[product.id] }),
+            });
+            if (!saveResponse.ok) failures.push(`save_http_${saveResponse.status}`);
           }
         } catch (error) {
           errors += 1;
           failures.push(error instanceof Error ? error.message : "network_error");
         }
+        setWatching({ ...refreshedLocal });
+        localStorage.setItem("smartbuy-watchlist-v3", JSON.stringify(refreshedLocal));
         setTrackingMessage(`Перевіряю ${index + 1}/${tracked.length}…`);
       }
+
       const parts = [`перевірено ${checked}`];
       if (updated) parts.push(`оновлено ${updated}`);
       if (notFound) parts.push(`не знайдено ${notFound}`);
       if (errors) parts.push(`помилок ${errors}`);
-      if (!checked && failures.length) parts.push(`причина: ${failures[0].slice(0, 80)}`);
+      if (failures.length) parts.push(`деталі: ${failures[0].slice(0, 80)}`);
       setTrackingMessage(parts.join(" · "));
-      await loadCloudWatchlist(syncKey);
+      if (!errors) await loadCloudWatchlist(syncKey);
     } finally {
       setTrackingRefresh(false);
     }
