@@ -120,44 +120,49 @@ async function runPool<T, R>(items: T[], concurrency: number, worker: (item: T) 
 }
 
 export async function refreshTrackedProducts(options?: { productKeys?: string[]; limit?: number }) {
-  const db = getSupabaseAdmin();
-  if (!db) return { cloud: false, checked: 0, updated: 0, notFound: 0, errors: 0, results: [] as unknown[] };
+  try {
+    const db = getSupabaseAdmin();
+    if (!db) return { cloud: false, checked: 0, updated: 0, notFound: 0, errors: 0, results: [] as unknown[], error: "supabase_not_configured" };
 
-  let productKeys = options?.productKeys?.filter(Boolean) || [];
-  if (!productKeys.length) {
-    const { data: watches, error } = await db.from("smartbuy_watchlist").select("product_key");
-    if (error) return { cloud: true, checked: 0, updated: 0, notFound: 0, errors: 1, results: [] as unknown[] };
-    productKeys = [...new Set((watches || []).map(row => String(row.product_key)))];
+    let productKeys = options?.productKeys?.filter(Boolean) || [];
+    if (!productKeys.length) {
+      const { data: watches, error } = await db.from("smartbuy_watchlist").select("product_key");
+      if (error) return { cloud: true, checked: 0, updated: 0, notFound: 0, errors: 1, results: [] as unknown[], error: error.message };
+      productKeys = [...new Set((watches || []).map(row => String(row.product_key)))];
+    }
+    if (!productKeys.length) return { cloud: true, checked: 0, updated: 0, notFound: 0, errors: 0, results: [] as unknown[] };
+
+    const { data: rows, error } = await db
+      .from("smartbuy_products")
+      .select("product_key,last_best_price,product_data")
+      .in("product_key", productKeys);
+    if (error) return { cloud: true, checked: 0, updated: 0, notFound: 0, errors: 1, results: [] as unknown[], error: error.message };
+
+    const limit = Math.max(1, Math.min(options?.limit || DEFAULT_LIMIT, MAX_LIMIT));
+    const sorted = (rows || [])
+      .map(row => ({
+        product: row.product_data as Product,
+        previousBestPrice: Number(row.last_best_price || (row.product_data as Product)?.bestPrice || 0),
+      }))
+      .filter(item => item.product?.id)
+      .sort((a, b) => {
+        const at = a.product.tracking?.lastCheckedAt ? new Date(a.product.tracking.lastCheckedAt).getTime() : 0;
+        const bt = b.product.tracking?.lastCheckedAt ? new Date(b.product.tracking.lastCheckedAt).getTime() : 0;
+        return at - bt;
+      })
+      .slice(0, limit);
+
+    const results = await runPool(sorted, Math.min(2, sorted.length || 1), item => refreshOne(item.product, item.previousBestPrice));
+    return {
+      cloud: true,
+      checked: results.length,
+      updated: results.filter(result => result.status === "ok").length,
+      notFound: results.filter(result => result.status === "not_found").length,
+      errors: results.filter(result => result.status === "error").length,
+      results,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "unknown_error";
+    return { cloud: true, checked: 0, updated: 0, notFound: 0, errors: 1, results: [] as unknown[], error: message };
   }
-  if (!productKeys.length) return { cloud: true, checked: 0, updated: 0, notFound: 0, errors: 0, results: [] as unknown[] };
-
-  const { data: rows, error } = await db
-    .from("smartbuy_products")
-    .select("product_key,last_best_price,product_data")
-    .in("product_key", productKeys);
-  if (error) return { cloud: true, checked: 0, updated: 0, notFound: 0, errors: 1, results: [] as unknown[] };
-
-  const limit = Math.max(1, Math.min(options?.limit || DEFAULT_LIMIT, MAX_LIMIT));
-  const sorted = (rows || [])
-    .map(row => ({
-      product: row.product_data as Product,
-      previousBestPrice: Number(row.last_best_price || (row.product_data as Product)?.bestPrice || 0),
-    }))
-    .filter(item => item.product?.id)
-    .sort((a, b) => {
-      const at = a.product.tracking?.lastCheckedAt ? new Date(a.product.tracking.lastCheckedAt).getTime() : 0;
-      const bt = b.product.tracking?.lastCheckedAt ? new Date(b.product.tracking.lastCheckedAt).getTime() : 0;
-      return at - bt;
-    })
-    .slice(0, limit);
-
-  const results = await runPool(sorted, 3, item => refreshOne(item.product, item.previousBestPrice));
-  return {
-    cloud: true,
-    checked: results.length,
-    updated: results.filter(result => result.status === "ok").length,
-    notFound: results.filter(result => result.status === "not_found").length,
-    errors: results.filter(result => result.status === "error").length,
-    results,
-  };
 }

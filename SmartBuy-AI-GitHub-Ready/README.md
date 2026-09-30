@@ -1,3 +1,13 @@
+# SmartBuy AI v0.7.1 — manual tracking reliability fix
+
+Hotfix for v0.7:
+- manual price refresh runs each watched product in a separate API request;
+- one slow marketplace can no longer fail the whole refresh;
+- server exceptions are converted into structured results;
+- the UI shows checked / updated / not found / errors and the first diagnostic reason when needed;
+- existing Supabase schema and environment variables do not change.
+
+No SQL migration is required if v0.6/v0.7 schema was already installed.
 # SmartBuy AI v0.7 — Automatic Price Tracking
 
 SmartBuy AI v0.7 builds on the working v0.6 cloud watchlist and adds scheduled background price checks.

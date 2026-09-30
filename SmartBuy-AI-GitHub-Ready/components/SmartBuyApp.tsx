@@ -255,24 +255,50 @@ export default function SmartBuyApp() {
 
   async function refreshTrackedNow() {
     if (!syncKey || !cloudEnabled || trackingRefresh) return;
+    const tracked = Object.values(watching);
+    if (!tracked.length) return;
     setTrackingRefresh(true);
-    setTrackingMessage("Перевіряю ціни…");
+    setTrackingMessage(`Перевіряю 0/${tracked.length}…`);
     try {
-      const response = await fetch("/api/tracking/refresh", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: syncKey }),
+      let checked = 0, updated = 0, notFound = 0, errors = 0;
+      const failures: string[] = [];
+
+      // One request per product: a slow marketplace can no longer make the whole
+      // manual refresh fail with a Vercel function timeout.
+      const jobs = tracked.map(async (product) => {
+        try {
+          const response = await fetch("/api/tracking/refresh", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token: syncKey, productKey: product.id }),
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            failures.push(String(data?.detail || data?.error || `HTTP ${response.status}`));
+            errors += 1;
+            return;
+          }
+          checked += Number(data.checked || 0);
+          updated += Number(data.updated || 0);
+          notFound += Number(data.notFound || 0);
+          errors += Number(data.errors || 0);
+        } catch (error) {
+          errors += 1;
+          failures.push(error instanceof Error ? error.message : "network_error");
+        } finally {
+          const done = checked + notFound + errors;
+          setTrackingMessage(`Перевіряю ${Math.min(done, tracked.length)}/${tracked.length}…`);
+        }
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error("refresh_failed");
-      const parts = [`перевірено ${Number(data.checked || 0)}`];
-      if (Number(data.updated || 0)) parts.push(`оновлено ${Number(data.updated)}`);
-      if (Number(data.notFound || 0)) parts.push(`не знайдено ${Number(data.notFound)}`);
-      if (Number(data.errors || 0)) parts.push(`помилок ${Number(data.errors)}`);
+
+      await Promise.all(jobs);
+      const parts = [`перевірено ${checked}`];
+      if (updated) parts.push(`оновлено ${updated}`);
+      if (notFound) parts.push(`не знайдено ${notFound}`);
+      if (errors) parts.push(`помилок ${errors}`);
+      if (!checked && failures.length) parts.push(`причина: ${failures[0].slice(0, 80)}`);
       setTrackingMessage(parts.join(" · "));
       await loadCloudWatchlist(syncKey);
-    } catch {
-      setTrackingMessage("Не вдалося перевірити ціни. Спробуй ще раз пізніше.");
     } finally {
       setTrackingRefresh(false);
     }
