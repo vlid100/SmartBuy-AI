@@ -1,10 +1,11 @@
--- SmartBuy AI — базова схема даних для Supabase/Postgres
+-- SmartBuy AI v0.3 — stores + private listings + price history
 create extension if not exists pgcrypto;
 
-create table if not exists stores (
+create table if not exists sources (
   id uuid primary key default gen_random_uuid(),
   name text not null unique,
   website text,
+  source_type text not null check (source_type in ('store','private_marketplace','aggregator','international')),
   trusted boolean not null default false,
   created_at timestamptz not null default now()
 );
@@ -21,23 +22,30 @@ create table if not exists products (
   updated_at timestamptz not null default now()
 );
 
-create table if not exists offers (
+create table if not exists listings (
   id uuid primary key default gen_random_uuid(),
   product_id uuid not null references products(id) on delete cascade,
-  store_id uuid not null references stores(id) on delete cascade,
+  source_id uuid not null references sources(id) on delete cascade,
+  external_id text,
   external_url text not null,
-  external_sku text,
+  seller_type text not null check (seller_type in ('store','private','international')),
+  seller_name text,
+  condition text not null check (condition in ('new','used','refurbished')),
+  city text,
   price_uah numeric(12,2) not null,
+  negotiable boolean not null default false,
+  verified_seller boolean not null default false,
   in_stock boolean not null default true,
-  warranty_months integer,
+  warranty_text text,
   delivery_text text,
+  published_at timestamptz,
   last_seen_at timestamptz not null default now(),
-  unique(product_id, store_id, external_url)
+  unique(source_id, external_url)
 );
 
 create table if not exists price_history (
   id bigint generated always as identity primary key,
-  offer_id uuid not null references offers(id) on delete cascade,
+  listing_id uuid not null references listings(id) on delete cascade,
   price_uah numeric(12,2) not null,
   captured_at timestamptz not null default now()
 );
@@ -47,13 +55,16 @@ create table if not exists watchlist (
   user_id uuid not null references auth.users(id) on delete cascade,
   product_id uuid not null references products(id) on delete cascade,
   target_price_uah numeric(12,2),
+  include_used boolean not null default true,
   created_at timestamptz not null default now(),
   unique(user_id, product_id)
 );
 
 create index if not exists idx_products_category on products(category);
-create index if not exists idx_offers_product_price on offers(product_id, price_uah);
-create index if not exists idx_price_history_offer_time on price_history(offer_id, captured_at desc);
+create index if not exists idx_listings_product_price on listings(product_id, price_uah);
+create index if not exists idx_listings_seller_condition on listings(seller_type, condition);
+create index if not exists idx_listings_source_seen on listings(source_id, last_seen_at desc);
+create index if not exists idx_price_history_listing_time on price_history(listing_id, captured_at desc);
 
 alter table watchlist enable row level security;
 create policy "Users can read own watchlist" on watchlist for select using (auth.uid() = user_id);

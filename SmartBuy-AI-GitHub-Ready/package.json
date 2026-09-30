@@ -1,12 +1,12 @@
 {
-  "name": "smartbuy-ai-mvp",
-  "version": "0.1.0",
+  "name": "smartbuy-ai",
+  "version": "0.3.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "tsc --noEmit"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",
