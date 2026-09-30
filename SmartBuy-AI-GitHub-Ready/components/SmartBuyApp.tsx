@@ -263,9 +263,10 @@ export default function SmartBuyApp() {
       let checked = 0, updated = 0, notFound = 0, errors = 0;
       const failures: string[] = [];
 
-      // One request per product: a slow marketplace can no longer make the whole
-      // manual refresh fail with a Vercel function timeout.
-      const jobs = tracked.map(async (product) => {
+      // Run requests sequentially. Vercel was intermittently failing when the
+      // browser launched several tracking functions at exactly the same time.
+      for (let index = 0; index < tracked.length; index += 1) {
+        const product = tracked[index];
         try {
           const response = await fetch("/api/tracking/refresh", {
             method: "POST",
@@ -276,22 +277,20 @@ export default function SmartBuyApp() {
           if (!response.ok) {
             failures.push(String(data?.detail || data?.error || `HTTP ${response.status}`));
             errors += 1;
-            return;
+          } else {
+            checked += Number(data.checked || 0);
+            updated += Number(data.updated || 0);
+            notFound += Number(data.notFound || 0);
+            errors += Number(data.errors || 0);
+            const firstResult = Array.isArray(data.results) ? data.results[0] : null;
+            if (firstResult?.detail) failures.push(String(firstResult.detail));
           }
-          checked += Number(data.checked || 0);
-          updated += Number(data.updated || 0);
-          notFound += Number(data.notFound || 0);
-          errors += Number(data.errors || 0);
         } catch (error) {
           errors += 1;
           failures.push(error instanceof Error ? error.message : "network_error");
-        } finally {
-          const done = checked + notFound + errors;
-          setTrackingMessage(`Перевіряю ${Math.min(done, tracked.length)}/${tracked.length}…`);
         }
-      });
-
-      await Promise.all(jobs);
+        setTrackingMessage(`Перевіряю ${index + 1}/${tracked.length}…`);
+      }
       const parts = [`перевірено ${checked}`];
       if (updated) parts.push(`оновлено ${updated}`);
       if (notFound) parts.push(`не знайдено ${notFound}`);
@@ -356,7 +355,7 @@ export default function SmartBuyApp() {
         {tab === "search" && (
           <>
             <div className="sourceStatus marketStatus">
-              <div><BadgeCheck size={18}/><b>Ринок України v0.7</b><span>{provider}</span></div>
+              <div><BadgeCheck size={18}/><b>Ринок України v0.7.2</b><span>{provider}</span></div>
               <p><Info size={15}/> Автоматично збираємо дані лише там, де це стабільно працює. Інші майданчики відкриваємо прямим пошуком — без вигаданих цін і без обходу захисту.</p>
             </div>
 
