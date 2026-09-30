@@ -22,13 +22,29 @@ export async function snapshotProducts(products: Product[]) {
 
   try {
     for (const product of products.slice(0, 24)) {
+      const { data: existing } = await db
+        .from("smartbuy_products")
+        .select("last_best_price,product_data")
+        .eq("product_key", product.id)
+        .maybeSingle();
+      const previousBestPrice = Number(existing?.last_best_price || product.bestPrice);
+      const productForStorage: Product = {
+        ...product,
+        tracking: product.tracking || {
+          lastCheckedAt: new Date().toISOString(),
+          status: "ok",
+          message: "Оновлено під час пошуку SmartBuy.",
+          previousBestPrice,
+          lastSeenPrice: product.bestPrice,
+        },
+      };
       await db.from("smartbuy_products").upsert({
         product_key: product.id,
         title: product.title,
         category: product.category,
         image_url: product.imageUrl || null,
         last_best_price: product.bestPrice,
-        product_data: compactProduct(product),
+        product_data: compactProduct(productForStorage),
         updated_at: new Date().toISOString(),
       }, { onConflict: "product_key" });
 

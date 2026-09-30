@@ -96,6 +96,8 @@ export default function SmartBuyApp() {
   const [syncing, setSyncing] = useState(false);
   const [history, setHistory] = useState<PricePoint[]>([]);
   const [historyCloud, setHistoryCloud] = useState(false);
+  const [trackingRefresh, setTrackingRefresh] = useState(false);
+  const [trackingMessage, setTrackingMessage] = useState("");
 
   useEffect(() => {
     let key = "";
@@ -251,6 +253,31 @@ export default function SmartBuyApp() {
     await saveWatchToCloud(product, targetPrices[product.id]);
   }
 
+  async function refreshTrackedNow() {
+    if (!syncKey || !cloudEnabled || trackingRefresh) return;
+    setTrackingRefresh(true);
+    setTrackingMessage("Перевіряю ціни…");
+    try {
+      const response = await fetch("/api/tracking/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: syncKey }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error("refresh_failed");
+      const parts = [`перевірено ${Number(data.checked || 0)}`];
+      if (Number(data.updated || 0)) parts.push(`оновлено ${Number(data.updated)}`);
+      if (Number(data.notFound || 0)) parts.push(`не знайдено ${Number(data.notFound)}`);
+      if (Number(data.errors || 0)) parts.push(`помилок ${Number(data.errors)}`);
+      setTrackingMessage(parts.join(" · "));
+      await loadCloudWatchlist(syncKey);
+    } catch {
+      setTrackingMessage("Не вдалося перевірити ціни. Спробуй ще раз пізніше.");
+    } finally {
+      setTrackingRefresh(false);
+    }
+  }
+
   async function useSyncCode() {
     const clean = syncInput.trim().toUpperCase().replace(/[^A-Z2-9]/g, "");
     if (clean.length < 8) return;
@@ -303,7 +330,7 @@ export default function SmartBuyApp() {
         {tab === "search" && (
           <>
             <div className="sourceStatus marketStatus">
-              <div><BadgeCheck size={18}/><b>Ринок України v0.6</b><span>{provider}</span></div>
+              <div><BadgeCheck size={18}/><b>Ринок України v0.7</b><span>{provider}</span></div>
               <p><Info size={15}/> Автоматично збираємо дані лише там, де це стабільно працює. Інші майданчики відкриваємо прямим пошуком — без вигаданих цін і без обходу захисту.</p>
             </div>
 
@@ -361,7 +388,8 @@ export default function SmartBuyApp() {
             <div className="syncPanelMain">
               <div className={`cloudBadge ${cloudEnabled ? "on" : "off"}`}>{cloudEnabled ? <Cloud size={18}/> : <CloudOff size={18}/>}<span>{cloudEnabled ? "Хмарна синхронізація активна" : "Локальне відстеження"}</span></div>
               <h2>Відстеження цін</h2>
-              <p>{cloudEnabled ? "Товари, цільові ціни та історія зберігаються в Supabase. На іншому пристрої введи той самий код синхронізації." : "Сайт працює без Supabase: товари зберігаються тільки в цьому браузері. Після підключення Supabase увімкнеться історія та синхронізація."}</p>
+              <p>{cloudEnabled ? "Товари, цільові ціни та історія зберігаються в Supabase. SmartBuy автоматично перевіряє відстежувані товари раз на день і дає перевірити їх вручну будь-коли." : "Сайт працює без Supabase: товари зберігаються тільки в цьому браузері. Після підключення Supabase увімкнеться історія, синхронізація та автоматична перевірка цін."}</p>
+              {cloudEnabled && <div className="trackingControls"><button onClick={() => void refreshTrackedNow()} disabled={trackingRefresh || watchProducts.length === 0}><RefreshCw size={15} className={trackingRefresh ? "spin" : ""}/>{trackingRefresh ? "Перевіряю…" : "Перевірити ціни зараз"}</button><small>{trackingMessage || "Автоперевірка: щодня через Vercel Cron"}</small></div>}
             </div>
             <div className="syncCodeBox">
               <span>Код синхронізації</span>
@@ -387,6 +415,8 @@ export default function SmartBuyApp() {
               const newPrice = bestByCondition(product.offers, "new");
               const usedPrice = bestByCondition(product.offers, "used");
               const saving = newPrice && usedPrice && usedPrice < newPrice ? Math.round((1 - usedPrice / newPrice) * 100) : null;
+              const previousTrackedPrice = Number(product.tracking?.previousBestPrice || 0);
+              const trackedDelta = previousTrackedPrice > 0 ? product.bestPrice - previousTrackedPrice : 0;
               return (
                 <article className="card" key={product.id}>
                   <div className="cardTop">
@@ -429,6 +459,14 @@ export default function SmartBuyApp() {
                     ))}
                   </details>
 
+                  {tab === "watch" && product.tracking && (
+                    <div className={`trackingStatus ${product.tracking.status}`}>
+                      <div><Clock3 size={14}/><span>{product.tracking.lastCheckedAt ? `Остання перевірка: ${new Date(product.tracking.lastCheckedAt).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}` : "Ще не перевірялось"}</span></div>
+                      <b>{product.tracking.status === "ok" ? trackedDelta < 0 ? `Ціна впала на ${money.format(Math.abs(trackedDelta))}` : trackedDelta > 0 ? `Ціна зросла на ${money.format(trackedDelta)}` : "Ціна без змін" : product.tracking.status === "not_found" ? "Товар тимчасово не знайдено" : "Помилка перевірки"}</b>
+                      {product.tracking.message && <small>{product.tracking.message}</small>}
+                    </div>
+                  )}
+
                   {tab === "watch" && (
                     <div className="targetPriceBox">
                       <div><Target size={15}/><span>Цільова ціна</span></div>
@@ -452,9 +490,9 @@ export default function SmartBuyApp() {
 
       {compareOpen && <div className="modalBackdrop" onMouseDown={() => setCompareOpen(false)}><div className="compareModal" onMouseDown={e => e.stopPropagation()}><div className="modalHeader"><div><h2>Порівняння</h2><p>До 3 моделей поруч.</p></div><button className="closeButton" onClick={() => setCompareOpen(false)}><X/></button></div>{compare.length === 0 ? <div className="empty"><p>Додай товари кнопкою «Порівняти».</p></div> : <div className="compareTableWrap"><table className="compareTable"><thead><tr><th></th>{compare.map(p => <th key={p.id}>{p.title}</th>)}</tr></thead><tbody><tr><td>Найнижча ціна</td>{compare.map(p => <td key={p.id}><b>{money.format(p.bestPrice)}</b></td>)}</tr><tr><td>Нове від</td>{compare.map(p => <td key={p.id}>{bestByCondition(p.offers,"new") ? money.format(bestByCondition(p.offers,"new")!) : "—"}</td>)}</tr><tr><td>Б/в від</td>{compare.map(p => <td key={p.id}>{bestByCondition(p.offers,"used") ? money.format(bestByCondition(p.offers,"used")!) : "—"}</td>)}</tr><tr><td>Smart score</td>{compare.map(p => <td key={p.id}>{p.score}/100</td>)}</tr><tr><td>Пропозицій</td>{compare.map(p => <td key={p.id}>{p.offers.length}</td>)}</tr></tbody></table></div>}</div></div>}
 
-      {selected && <div className="modalBackdrop detailBackdrop" onMouseDown={() => setSelected(null)}><aside className="detailDrawer" onMouseDown={e => e.stopPropagation()}><button className="closeButton drawerClose" onClick={() => setSelected(null)}><X/></button><div className="detailVisual">{selected.imageUrl ? <img src={selected.imageUrl} alt={selected.title}/> : selected.image}</div><div className="score"><Sparkles size={14}/> Smart score {selected.score}/100</div><h2>{selected.title}</h2><p className="subtitle">{selected.subtitle}</p><div className="detailPrice">від {money.format(selected.bestPrice)}</div><div className="drawerTrackRow"><button className={`trackButton ${watching[selected.id] ? "saved" : ""}`} onClick={() => void toggleWatch(selected)}><Heart size={16} fill={watching[selected.id] ? "currentColor" : "none"}/>{watching[selected.id] ? "Відстежується" : "Відстежувати"}</button><div className="drawerTarget"><Target size={14}/><input inputMode="numeric" value={targetPrices[selected.id] || ""} onChange={e => updateTarget(selected, e.target.value)} placeholder="цільова ціна"/><span>₴</span><button onClick={() => void commitTarget(selected)}>OK</button></div></div><h3><TrendingDown size={16}/> Історія ціни</h3><PriceHistoryChart points={history.length ? history : (selected.priceHistory || [])} currentPrice={selected.bestPrice}/><p className="historyHint">{historyCloud ? "Дані з Supabase. Новий запис додається під час реального пошуку, якщо ціна змінилась або минуло 6 годин." : "Підключи Supabase, щоб SmartBuy накопичував реальну історію ціни між пошуками."}</p><div className="aiBox"><b><Sparkles size={14}/> Smart-висновок</b><p>{selected.aiSummary}</p></div><h3>Ключове</h3><div className="highlights">{selected.highlights.map(x => <span key={x}><Check size={13}/>{x}</span>)}</div><h3>Пропозиції з ринку</h3>{selected.offers.map((o, i) => <div className={`detailOffer ${o.sellerType}`} key={`${o.store}-${i}`}><div><b>{o.marketplace} · {conditionLabel(o.condition)}</b><small>{o.sellerType === "private" ? "Приватний продавець" : o.sellerName || o.store}</small>{o.city && <small><MapPin size={12}/> {o.city}</small>}{o.postedAt && <small><Clock3 size={12}/> {o.postedAt}</small>}</div><strong>{money.format(o.price)}</strong>{o.url && <a href={o.url} target="_blank" rel="noreferrer">Відкрити <ExternalLink size={14}/></a>}</div>)}</aside></div>}
+      {selected && <div className="modalBackdrop detailBackdrop" onMouseDown={() => setSelected(null)}><aside className="detailDrawer" onMouseDown={e => e.stopPropagation()}><button className="closeButton drawerClose" onClick={() => setSelected(null)}><X/></button><div className="detailVisual">{selected.imageUrl ? <img src={selected.imageUrl} alt={selected.title}/> : selected.image}</div><div className="score"><Sparkles size={14}/> Smart score {selected.score}/100</div><h2>{selected.title}</h2><p className="subtitle">{selected.subtitle}</p><div className="detailPrice">від {money.format(selected.bestPrice)}</div><div className="drawerTrackRow"><button className={`trackButton ${watching[selected.id] ? "saved" : ""}`} onClick={() => void toggleWatch(selected)}><Heart size={16} fill={watching[selected.id] ? "currentColor" : "none"}/>{watching[selected.id] ? "Відстежується" : "Відстежувати"}</button><div className="drawerTarget"><Target size={14}/><input inputMode="numeric" value={targetPrices[selected.id] || ""} onChange={e => updateTarget(selected, e.target.value)} placeholder="цільова ціна"/><span>₴</span><button onClick={() => void commitTarget(selected)}>OK</button></div></div><h3><TrendingDown size={16}/> Історія ціни</h3><PriceHistoryChart points={history.length ? history : (selected.priceHistory || [])} currentPrice={selected.bestPrice}/><p className="historyHint">{historyCloud ? "Дані з Supabase. Історія оновлюється під час пошуку, ручної перевірки та автоматичної щоденної перевірки." : "Підключи Supabase, щоб SmartBuy накопичував реальну історію ціни між пошуками."}</p><div className="aiBox"><b><Sparkles size={14}/> Smart-висновок</b><p>{selected.aiSummary}</p></div><h3>Ключове</h3><div className="highlights">{selected.highlights.map(x => <span key={x}><Check size={13}/>{x}</span>)}</div><h3>Пропозиції з ринку</h3>{selected.offers.map((o, i) => <div className={`detailOffer ${o.sellerType}`} key={`${o.store}-${i}`}><div><b>{o.marketplace} · {conditionLabel(o.condition)}</b><small>{o.sellerType === "private" ? "Приватний продавець" : o.sellerName || o.store}</small>{o.city && <small><MapPin size={12}/> {o.city}</small>}{o.postedAt && <small><Clock3 size={12}/> {o.postedAt}</small>}</div><strong>{money.format(o.price)}</strong>{o.url && <a href={o.url} target="_blank" rel="noreferrer">Відкрити <ExternalLink size={14}/></a>}</div>)}</aside></div>}
 
-      <footer><div className="brand"><div className="logo">S</div><span>SmartBuy AI</span></div><p>v0.6 · історія цін · цільова ціна · хмарне відстеження.</p></footer>
+      <footer><div className="brand"><div className="logo">S</div><span>SmartBuy AI</span></div><p>v0.7 · автоматичне відстеження · історія цін · цільова ціна.</p></footer>
     </main>
   );
 }
