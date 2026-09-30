@@ -93,6 +93,8 @@ export default function SmartBuyApp() {
   const [syncKey, setSyncKey] = useState("");
   const [syncInput, setSyncInput] = useState("");
   const [cloudEnabled, setCloudEnabled] = useState<boolean | null>(null);
+  const [cloudConfigured, setCloudConfigured] = useState<boolean | null>(null);
+  const [cloudDetail, setCloudDetail] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [history, setHistory] = useState<PricePoint[]>([]);
   const [historyCloud, setHistoryCloud] = useState(false);
@@ -110,7 +112,7 @@ export default function SmartBuyApp() {
       localStorage.setItem("smartbuy-sync-key-v1", key);
       setSyncKey(key);
     } catch {}
-    if (key) void loadCloudWatchlist(key);
+    if (key) void initializeCloud(key);
     void runSearch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -180,13 +182,56 @@ export default function SmartBuyApp() {
     });
   }
 
-  async function loadCloudWatchlist(key = syncKey) {
+  async function fetchWithRetry(url: string, init?: RequestInit, attempts = 3) {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        const response = await fetch(url, { ...init, cache: "no-store" });
+        return response;
+      } catch (error) {
+        lastError = error;
+        if (attempt < attempts - 1) await new Promise(resolve => setTimeout(resolve, 350 * (attempt + 1)));
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("network_error");
+  }
+
+  async function initializeCloud(key: string) {
+    try {
+      const response = await fetchWithRetry("/api/cloud/status", undefined, 3);
+      const status = await response.json();
+      const configured = Boolean(status?.configured);
+      setCloudConfigured(configured);
+      if (!configured) {
+        setCloudEnabled(false);
+        const missing: string[] = [];
+        if (!status?.hasUrl) missing.push("SUPABASE_URL");
+        if (!status?.hasServerKey) missing.push("SUPABASE_SERVICE_ROLE_KEY / SUPABASE_SECRET_KEY");
+        setCloudDetail(missing.length ? `Vercel не бачить: ${missing.join(" + ")}` : "Supabase не налаштований для цього deployment.");
+        return;
+      }
+      setCloudEnabled(true);
+      setCloudDetail(status?.keySource === "secret" ? "Supabase підключено через серверний Secret key." : "Supabase підключено через серверний service role key.");
+      await loadCloudWatchlist(key, true);
+    } catch {
+      // A temporary request failure must not silently reclassify an already-configured project as local.
+      setCloudDetail("Не вдалося перевірити статус хмари. Онови сторінку — SmartBuy повторить спробу.");
+    }
+  }
+
+  async function loadCloudWatchlist(key = syncKey, configured = cloudConfigured === true) {
     if (!key) return;
     setSyncing(true);
     try {
-      const response = await fetch(`/api/watchlist?token=${encodeURIComponent(key)}`, { cache: "no-store" });
+      const response = await fetchWithRetry(`/api/watchlist?token=${encodeURIComponent(key)}`, undefined, 3);
       const data = await response.json();
-      setCloudEnabled(Boolean(data.cloud));
+      if (data.cloud) {
+        setCloudConfigured(true);
+        setCloudEnabled(true);
+        setCloudDetail("Хмарна синхронізація готова. Товари й історія зберігаються в Supabase.");
+      } else if (!configured) {
+        setCloudEnabled(false);
+      }
       if (data.cloud && Array.isArray(data.items)) {
         const cloudProducts: Record<string, Product> = {};
         const cloudTargets: Record<string, number> = {};
@@ -205,16 +250,26 @@ export default function SmartBuyApp() {
           return merged;
         });
       }
-    } catch { setCloudEnabled(false); } finally { setSyncing(false); }
+    } catch {
+      if (configured) {
+        setCloudEnabled(true);
+        setCloudDetail("Supabase налаштовано, але запит синхронізації тимчасово не відповів. Локальні дані не втрачено.");
+      } else {
+        setCloudDetail("Не вдалося з'єднатися з API хмари. SmartBuy повторить перевірку після оновлення сторінки.");
+      }
+    } finally { setSyncing(false); }
   }
 
   async function saveWatchToCloud(product: Product, targetPrice?: number) {
     if (!syncKey) return;
     try {
-      const response = await fetch("/api/watchlist", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: syncKey, product, targetPrice }) });
+      const response = await fetchWithRetry("/api/watchlist", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: syncKey, product, targetPrice }) }, 3);
       const data = await response.json();
-      setCloudEnabled(Boolean(data.cloud));
-    } catch { setCloudEnabled(false); }
+      if (data.cloud) { setCloudConfigured(true); setCloudEnabled(true); }
+      else if (cloudConfigured === false) setCloudEnabled(false);
+    } catch {
+      if (cloudConfigured) setCloudDetail("Хмара налаштована, але останнє збереження не підтвердилося. Дані залишилися локально й можна повторити.");
+    }
   }
 
   async function toggleWatch(product: Product) {
@@ -227,13 +282,16 @@ export default function SmartBuyApp() {
     });
     if (!syncKey) return;
     try {
-      const response = await fetch("/api/watchlist", {
+      const response = await fetchWithRetry("/api/watchlist", {
         method: exists ? "DELETE" : "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(exists ? { token: syncKey, productKey: product.id } : { token: syncKey, product, targetPrice: targetPrices[product.id] }),
-      });
+      }, 3);
       const data = await response.json();
-      setCloudEnabled(Boolean(data.cloud));
-    } catch { setCloudEnabled(false); }
+      if (data.cloud) { setCloudConfigured(true); setCloudEnabled(true); }
+      else if (cloudConfigured === false) setCloudEnabled(false);
+    } catch {
+      if (cloudConfigured) setCloudDetail("Хмара налаштована, але остання зміна не підтвердилася сервером. Локальна копія збережена.");
+    }
   }
 
   function updateTarget(product: Product, value: string) {
@@ -476,10 +534,11 @@ export default function SmartBuyApp() {
         {tab === "watch" && (
           <section className="syncPanel">
             <div className="syncPanelMain">
-              <div className={`cloudBadge ${cloudEnabled ? "on" : "off"}`}>{cloudEnabled ? <Cloud size={18}/> : <CloudOff size={18}/>}<span>{cloudEnabled ? "Хмарна синхронізація активна" : "Локальне відстеження"}</span></div>
+              <div className={`cloudBadge ${cloudEnabled === true ? "on" : "off"}`}>{cloudEnabled === true ? <Cloud size={18}/> : <CloudOff size={18}/>}<span>{cloudEnabled === true ? "Хмарна синхронізація активна" : cloudEnabled === false ? "Локальне відстеження" : "Перевіряю хмару…"}</span></div>
               <h2>Відстеження цін</h2>
-              <p>{cloudEnabled ? "Товари, цільові ціни та історія зберігаються в Supabase. SmartBuy автоматично перевіряє відстежувані товари раз на день і дає перевірити їх вручну будь-коли." : "Сайт працює без Supabase: товари зберігаються тільки в цьому браузері. Після підключення Supabase увімкнеться історія, синхронізація та автоматична перевірка цін."}</p>
-              {cloudEnabled && <div className="trackingControls"><button onClick={() => void refreshTrackedNow()} disabled={trackingRefresh || watchProducts.length === 0}><RefreshCw size={15} className={trackingRefresh ? "spin" : ""}/>{trackingRefresh ? "Перевіряю…" : "Перевірити ціни зараз"}</button><small>{trackingMessage || "Автоперевірка: щодня через Vercel Cron"}</small></div>}
+              <p>{cloudEnabled === true ? "Товари, цільові ціни та історія зберігаються в Supabase. SmartBuy автоматично перевіряє відстежувані товари раз на день і дає перевірити їх вручну будь-коли." : cloudEnabled === false ? "Сайт працює без серверного доступу до Supabase для цього deployment. Товари поки зберігаються локально." : "SmartBuy перевіряє серверне підключення до Supabase."}</p>
+              {cloudDetail && <small>{cloudDetail}</small>}
+              {cloudEnabled === true && <div className="trackingControls"><button onClick={() => void refreshTrackedNow()} disabled={trackingRefresh || watchProducts.length === 0}><RefreshCw size={15} className={trackingRefresh ? "spin" : ""}/>{trackingRefresh ? "Перевіряю…" : "Перевірити ціни зараз"}</button><small>{trackingMessage || "Автоперевірка: щодня через Vercel Cron"}</small></div>}
             </div>
             <div className="syncCodeBox">
               <span>Код синхронізації</span>
