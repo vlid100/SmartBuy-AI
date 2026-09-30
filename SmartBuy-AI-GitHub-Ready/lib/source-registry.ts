@@ -27,15 +27,18 @@ const ukrainianSources: SourceDef[] = [
 ];
 
 const internationalSources: SourceDef[] = [
-  { id: "aliexpress", name: "AliExpress", kind: "international", label: "Закордон", access: "planned", buildUrl: q => `https://www.aliexpress.com/wholesale?SearchText=${enc(q)}` },
-  { id: "temu", name: "Temu", kind: "international", label: "Закордон", access: "planned", buildUrl: q => `https://www.temu.com/search_result.html?search_key=${enc(q)}` },
-  { id: "amazon", name: "Amazon", kind: "international", label: "Закордон", access: "planned", buildUrl: q => `https://www.amazon.com/s?k=${enc(q)}` },
+  { id: "aliexpress", name: "AliExpress", kind: "international", label: "Закордон", access: "direct", buildUrl: q => `https://www.aliexpress.com/wholesale?SearchText=${enc(q)}` },
+  { id: "temu", name: "Temu", kind: "international", label: "Закордон", access: "direct", buildUrl: q => `https://www.temu.com/search_result.html?search_key=${enc(q)}` },
+  { id: "amazon", name: "Amazon", kind: "international", label: "Закордон", access: "direct", buildUrl: q => `https://www.amazon.com/s?k=${enc(q)}` },
 ];
 
-export function getSourceLinks(query: string, scope: "ukraine" | "international" = "ukraine"): SourceLink[] {
+export function getSourceLinks(query: string, scope: "ukraine" | "international" | "all" = "ukraine"): SourceLink[] {
   if (!query.trim()) return [];
-  const list = scope === "international" ? internationalSources : ukrainianSources;
-  return list.map(({ buildUrl, ...source }) => ({ ...source, url: buildUrl(query) }));
+  const decorate = (items: SourceDef[], region: "ukraine" | "international") =>
+    items.map(({ buildUrl, ...source }) => ({ ...source, region, url: buildUrl(query) }));
+  if (scope === "international") return decorate(internationalSources, "international");
+  if (scope === "all") return [...decorate(ukrainianSources, "ukraine"), ...decorate(internationalSources, "international")];
+  return decorate(ukrainianSources, "ukraine");
 }
 
 export const sourceCounts = {

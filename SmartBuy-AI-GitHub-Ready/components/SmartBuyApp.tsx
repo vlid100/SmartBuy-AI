@@ -18,7 +18,7 @@ const marketFilters: { id: MarketFilter; label: string; icon: "all" | "new" | "u
   { id: "private", label: "Приватні", icon: "private" },
   { id: "international", label: "Закордон", icon: "world" },
 ];
-const quickSearches = ["iPhone 15 Pro 256", "Lenovo LOQ 15", "Makita DHP486", "Roborock Q8 Max+"];
+const quickSearches = ["iPhone 17 256GB", "Lenovo LOQ 15", "Makita DHP486", "Roborock Q8 Max+"];
 const money = new Intl.NumberFormat("uk-UA", { style: "currency", currency: "UAH", maximumFractionDigits: 0 });
 
 type Tab = "search" | "compare" | "watch";
@@ -32,6 +32,17 @@ function conditionLabel(condition: Offer["condition"]) {
   if (condition === "new") return "Нове";
   if (condition === "refurbished") return "Відновлене";
   return "Б/в";
+}
+
+function marketJumpLinks(title: string) {
+  const q = encodeURIComponent(title.trim());
+  const slug = title.trim().toLowerCase().replace(/[^a-zа-яіїєґ0-9]+/gi, "-").replace(/^-|-$/g, "");
+  return [
+    { name: "OLX", kind: "private", url: `https://www.olx.ua/uk/list/q-${slug}/` },
+    { name: "AliExpress", kind: "international", url: `https://www.aliexpress.com/wholesale?SearchText=${q}` },
+    { name: "Temu", kind: "international", url: `https://www.temu.com/search_result.html?search_key=${q}` },
+    { name: "Amazon", kind: "international", url: `https://www.amazon.com/s?k=${q}` },
+  ] as const;
 }
 
 function filterIcon(id: MarketFilter) {
@@ -102,7 +113,7 @@ export default function SmartBuyApp() {
   const [watching, setWatching] = useState<Record<string, Product>>({});
   const [maxPrice, setMaxPrice] = useState("");
   const [tab, setTab] = useState<Tab>("search");
-  const [provider, setProvider] = useState("Україна: магазини + приватні оголошення");
+  const [provider, setProvider] = useState("Весь ринок: Україна + приватні оголошення + закордон");
   const [warning, setWarning] = useState<string | undefined>();
   const [sourceLinks, setSourceLinks] = useState<SourceLink[]>([]);
   const [sourceStatuses, setSourceStatuses] = useState<SourceSearchStatus[]>([]);
@@ -442,6 +453,9 @@ export default function SmartBuyApp() {
 
   const watchProducts = useMemo(() => Object.values(watching), [watching]);
   const visibleProducts = tab === "watch" ? watchProducts : products;
+  const ukraineSourceLinks = useMemo(() => sourceLinks.filter(source => source.region !== "international"), [sourceLinks]);
+  const internationalSourceLinks = useMemo(() => sourceLinks.filter(source => source.region === "international"), [sourceLinks]);
+  const privateSourceLinks = useMemo(() => sourceLinks.filter(source => source.kind === "private"), [sourceLinks]);
 
   return (
     <main>
@@ -460,9 +474,9 @@ export default function SmartBuyApp() {
       </header>
 
       <section className="hero" id="search">
-        <div className="eyebrow"><Sparkles size={15}/> Весь ринок в одному пошуку</div>
-        <h1>Знайди потрібну річ.<br/><span>І в магазині, і в людей.</span></h1>
-        <p>SmartBuy має збирати нові товари з магазинів та б/в оголошення від людей окремо — щоб ти одразу бачив реальну різницю в ціні.</p>
+        <div className="eyebrow"><Sparkles size={15}/> SmartBuy AI v1.0 · один запит на весь ринок</div>
+        <h1>Знайди потрібну річ.<br/><span>Порівняй увесь ринок.</span></h1>
+        <p>Українські магазини, приватні оголошення та закордонні майданчики в одному місці. SmartBuy показує автоматично підтверджені ціни окремо від прямих пошуків, щоб не вигадувати дані.</p>
 
         <form className="searchBox" onSubmit={e => { e.preventDefault(); void runSearch(); }}>
           <Search size={22}/>
@@ -479,8 +493,8 @@ export default function SmartBuyApp() {
         {tab === "search" && (
           <>
             <div className="sourceStatus marketStatus">
-              <div><BadgeCheck size={18}/><b>Ринок України v0.9</b><span>{provider}</span></div>
-              <p><Info size={15}/> Автоматично збираємо дані лише там, де це стабільно працює. Інші майданчики відкриваємо прямим пошуком — без вигаданих цін і без обходу захисту.</p>
+              <div><BadgeCheck size={18}/><b>SmartBuy AI v1.0</b><span>{provider}</span></div>
+              <p><Info size={15}/> Зелені ціни — автоматично підтверджені джерела. OLX, Shafa, AliExpress, Temu, Amazon та недоступні для сервера магазини відкриваються точним прямим пошуком.</p>
             </div>
 
             <div className="marketFilters">
@@ -489,6 +503,18 @@ export default function SmartBuyApp() {
                   {filterIcon(item.id)}{item.label}
                 </button>
               ))}
+            </div>
+
+            <div className="marketUniverse">
+              <button className={marketFilter === "stores" || marketFilter === "new" ? "active" : ""} onClick={() => selectMarket("stores")}>
+                <Store size={18}/><div><b>Магазини України</b><span>ціни SmartBuy + прямий пошук</span></div>
+              </button>
+              <button className={marketFilter === "private" || marketFilter === "used" ? "active" : ""} onClick={() => selectMarket("private")}>
+                <UserRound size={18}/><div><b>Від людей</b><span>OLX · Shafa · б/в</span></div>
+              </button>
+              <button className={marketFilter === "international" ? "active" : ""} onClick={() => selectMarket("international")}>
+                <Globe2 size={18}/><div><b>Закордон</b><span>AliExpress · Temu · Amazon</span></div>
+              </button>
             </div>
 
             <div className="categories">
@@ -509,22 +535,37 @@ export default function SmartBuyApp() {
             {sourceLinks.length > 0 && (
               <section className="sourceLauncher">
                 <div className="sourceLauncherHead">
-                  <div><h3>Джерела цього пошуку</h3><p>Prom.ua, Bigl.ua і MOYO SmartBuy пробує перевіряти автоматично. Інші українські магазини, агрегатори та приватні майданчики відкривають той самий запит напряму.</p></div>
+                  <div><h3>Де SmartBuy шукає цей товар</h3><p>v1.0 чітко розділяє автоматичні ціни та прямі переходи. Ти бачиш весь ринок, але непідтверджена ціна ніколи не видається за live.</p></div>
                   <span>{sourceLinks.filter(s => s.access === "live").length} авто · {sourceLinks.filter(s => s.access === "direct").length} прямий</span>
                 </div>
-                <div className="sourceLinks">
-                  {sourceLinks.map(source => {
-                    const status = sourceStatuses.find(item => item.id === source.id);
-                    const statusText = source.access === "direct" ? "прямий пошук" : source.access === "planned" ? "підключимо пізніше" : !status ? "автоматичне джерело" : status.state === "ok" ? `${status.offerCount} знайдено` : status.state === "blocked" ? "тимчасово недоступне" : status.state === "timeout" ? "не відповіло вчасно" : status.state === "empty" ? "відповіло · карток не знайдено" : status.state === "error" ? "тимчасова помилка" : "автоматичне джерело";
-                    return (
-                      <a key={source.id} href={source.url} target="_blank" rel="noreferrer" className={`sourceChip ${source.kind} access-${source.access} ${status ? `status-${status.state}` : ""}`}>
-                        <span>{source.kind === "private" ? <UserRound size={16}/> : source.kind === "international" ? <Globe2 size={16}/> : <Store size={16}/>}</span>
-                        <div><b>{source.name}</b><small>{statusText}</small></div>
-                        <ExternalLink size={14}/>
-                      </a>
-                    );
-                  })}
+
+                <div className="sourceGroupSummary">
+                  <div><Store size={17}/><span>Україна</span><b>{ukraineSourceLinks.length}</b><small>{coverage.totalOffers ? `${coverage.totalOffers} live-проп.` : "пошук"}</small></div>
+                  <div><UserRound size={17}/><span>Приватні</span><b>{privateSourceLinks.length}</b><small>OLX / Shafa</small></div>
+                  <div><Globe2 size={17}/><span>Закордон</span><b>{internationalSourceLinks.length}</b><small>прямий пошук</small></div>
                 </div>
+
+                {ukraineSourceLinks.length > 0 && (
+                  <details className="sourceGroup" open={marketFilter !== "international"}>
+                    <summary><span><Store size={16}/> Український ринок</span><b>{ukraineSourceLinks.length} джерел</b><ChevronDown size={16}/></summary>
+                    <div className="sourceLinks">
+                      {ukraineSourceLinks.map(source => {
+                        const status = sourceStatuses.find(item => item.id === source.id);
+                        const statusText = source.access === "direct" ? "прямий пошук" : !status ? "автоматичне джерело" : status.state === "ok" ? `${status.offerCount} знайдено` : status.state === "blocked" ? "тимчасово недоступне" : status.state === "timeout" ? "не відповіло вчасно" : status.state === "empty" ? "відповіло · карток не знайдено" : status.state === "error" ? "тимчасова помилка" : "автоматичне джерело";
+                        return <a key={source.id} href={source.url} target="_blank" rel="noreferrer" className={`sourceChip ${source.kind} access-${source.access} ${status ? `status-${status.state}` : ""}`}><span>{source.kind === "private" ? <UserRound size={16}/> : <Store size={16}/>}</span><div><b>{source.name}</b><small>{statusText}</small></div><ExternalLink size={14}/></a>;
+                      })}
+                    </div>
+                  </details>
+                )}
+
+                {internationalSourceLinks.length > 0 && (
+                  <details className="sourceGroup" open={marketFilter === "international"}>
+                    <summary><span><Globe2 size={16}/> Закордон</span><b>{internationalSourceLinks.length} майданчики</b><ChevronDown size={16}/></summary>
+                    <div className="sourceLinks internationalLinks">
+                      {internationalSourceLinks.map(source => <a key={source.id} href={source.url} target="_blank" rel="noreferrer" className="sourceChip international access-direct"><span><Globe2 size={16}/></span><div><b>{source.name}</b><small>відкрити точний запит</small></div><ExternalLink size={14}/></a>)}
+                    </div>
+                  </details>
+                )}
               </section>
             )}
 
@@ -580,7 +621,7 @@ export default function SmartBuyApp() {
                   <div className="score"><Sparkles size={14}/> Smart score {product.score}/100</div>
                   <button className="titleButton" onClick={() => setSelected(product)}><h3>{product.title}</h3></button>
                   <p className="subtitle">{product.subtitle}</p>
-                  <div className="rating"><Star size={15} fill="currentColor"/> {product.rating.toFixed(1)} <span>{product.reviewCount > 0 ? `(${product.reviewCount})` : ""}</span></div>
+                  {(product.rating > 0 || product.reviewCount > 0) && <div className="rating"><Star size={15} fill="currentColor"/> {product.rating > 0 ? product.rating.toFixed(1) : "—"} <span>{product.reviewCount > 0 ? `(${product.reviewCount})` : ""}</span></div>}
 
                   <div className="segmentPrices">
                     {newPrice !== null && <div><span><Store size={14}/> Нове від</span><b>{money.format(newPrice)}</b></div>}
@@ -593,6 +634,11 @@ export default function SmartBuyApp() {
                   <div className="highlights">{product.highlights.slice(0,3).map(x => <span key={x}><Check size={13}/>{x}</span>)}</div>
                   {product.caution && <div className="caution">⚠ {product.caution}</div>}
                   <div className="aiBox"><b><Sparkles size={14}/> Smart-висновок</b><p>{product.aiSummary}</p></div>
+
+                  <div className="marketJump">
+                    <span>Перевірити ще:</span>
+                    {marketJumpLinks(product.title).map(link => <a key={link.name} href={link.url} target="_blank" rel="noreferrer" className={link.kind}><span>{link.kind === "private" ? <UserRound size={12}/> : <Globe2 size={12}/>}</span>{link.name}<ExternalLink size={11}/></a>)}
+                  </div>
 
                   <details className="offers">
                     <summary>Усі пропозиції <ChevronDown size={16}/></summary>
@@ -644,9 +690,9 @@ export default function SmartBuyApp() {
 
       {compareOpen && <div className="modalBackdrop" onMouseDown={() => setCompareOpen(false)}><div className="compareModal" onMouseDown={e => e.stopPropagation()}><div className="modalHeader"><div><h2>Порівняння</h2><p>До 3 моделей поруч.</p></div><button className="closeButton" onClick={() => setCompareOpen(false)}><X/></button></div>{compare.length === 0 ? <div className="empty"><p>Додай товари кнопкою «Порівняти».</p></div> : <div className="compareTableWrap"><table className="compareTable"><thead><tr><th></th>{compare.map(p => <th key={p.id}>{p.title}</th>)}</tr></thead><tbody><tr><td>Найнижча ціна</td>{compare.map(p => <td key={p.id}><b>{money.format(p.bestPrice)}</b></td>)}</tr><tr><td>Нове від</td>{compare.map(p => <td key={p.id}>{bestByCondition(p.offers,"new") ? money.format(bestByCondition(p.offers,"new")!) : "—"}</td>)}</tr><tr><td>Б/в від</td>{compare.map(p => <td key={p.id}>{bestByCondition(p.offers,"used") ? money.format(bestByCondition(p.offers,"used")!) : "—"}</td>)}</tr><tr><td>Smart score</td>{compare.map(p => <td key={p.id}>{p.score}/100</td>)}</tr><tr><td>Пропозицій</td>{compare.map(p => <td key={p.id}>{p.offers.length}</td>)}</tr></tbody></table></div>}</div></div>}
 
-      {selected && <div className="modalBackdrop detailBackdrop" onMouseDown={() => setSelected(null)}><aside className="detailDrawer" onMouseDown={e => e.stopPropagation()}><button className="closeButton drawerClose" onClick={() => setSelected(null)}><X/></button><div className="detailVisual">{selected.imageUrl ? <img src={selected.imageUrl} alt={selected.title}/> : selected.image}</div><div className="score"><Sparkles size={14}/> Smart score {selected.score}/100</div><h2>{selected.title}</h2><p className="subtitle">{selected.subtitle}</p><div className="detailPrice">від {money.format(selected.bestPrice)}</div><div className="drawerTrackRow"><button className={`trackButton ${watching[selected.id] ? "saved" : ""}`} onClick={() => void toggleWatch(selected)}><Heart size={16} fill={watching[selected.id] ? "currentColor" : "none"}/>{watching[selected.id] ? "Відстежується" : "Відстежувати"}</button><div className="drawerTarget"><Target size={14}/><input inputMode="numeric" value={targetPrices[selected.id] || ""} onChange={e => updateTarget(selected, e.target.value)} placeholder="цільова ціна"/><span>₴</span><button onClick={() => void commitTarget(selected)}>OK</button></div></div><h3><TrendingDown size={16}/> Історія ціни</h3><PriceHistoryChart points={history.length ? history : (selected.priceHistory || [])} currentPrice={selected.bestPrice}/><p className="historyHint">{historyCloud ? "Дані з Supabase. Історія оновлюється під час пошуку, ручної перевірки та автоматичної щоденної перевірки." : "Підключи Supabase, щоб SmartBuy накопичував реальну історію ціни між пошуками."}</p><div className="aiBox"><b><Sparkles size={14}/> Smart-висновок</b><p>{selected.aiSummary}</p></div><h3>Ключове</h3><div className="highlights">{selected.highlights.map(x => <span key={x}><Check size={13}/>{x}</span>)}</div><h3>Пропозиції з ринку</h3>{selected.offers.map((o, i) => <div className={`detailOffer ${o.sellerType} ${o.priceAnomaly ? "priceAnomaly" : ""}`} key={`${o.store}-${i}`}><div><b>{o.marketplace} · {conditionLabel(o.condition)}</b><small>{o.sellerType === "private" ? "Приватний продавець" : o.sellerName || o.store}</small>{o.city && <small><MapPin size={12}/> {o.city}</small>}{o.postedAt && <small><Clock3 size={12}/> {o.postedAt}</small>}{o.matchConfidence ? <small>Збіг моделі: {o.matchConfidence}%</small> : null}{o.priceAnomaly ? <small className="anomalyText">⚠ Ціна не використовується як рекомендований мінімум</small> : null}</div><strong>{money.format(o.price)}</strong>{o.url && <a href={o.url} target="_blank" rel="noreferrer">Відкрити <ExternalLink size={14}/></a>}</div>)}</aside></div>}
+      {selected && <div className="modalBackdrop detailBackdrop" onMouseDown={() => setSelected(null)}><aside className="detailDrawer" onMouseDown={e => e.stopPropagation()}><button className="closeButton drawerClose" onClick={() => setSelected(null)}><X/></button><div className="detailVisual">{selected.imageUrl ? <img src={selected.imageUrl} alt={selected.title}/> : selected.image}</div><div className="score"><Sparkles size={14}/> Smart score {selected.score}/100</div><h2>{selected.title}</h2><p className="subtitle">{selected.subtitle}</p><div className="detailPrice">від {money.format(selected.bestPrice)}</div><div className="drawerTrackRow"><button className={`trackButton ${watching[selected.id] ? "saved" : ""}`} onClick={() => void toggleWatch(selected)}><Heart size={16} fill={watching[selected.id] ? "currentColor" : "none"}/>{watching[selected.id] ? "Відстежується" : "Відстежувати"}</button><div className="drawerTarget"><Target size={14}/><input inputMode="numeric" value={targetPrices[selected.id] || ""} onChange={e => updateTarget(selected, e.target.value)} placeholder="цільова ціна"/><span>₴</span><button onClick={() => void commitTarget(selected)}>OK</button></div></div><h3><TrendingDown size={16}/> Історія ціни</h3><PriceHistoryChart points={history.length ? history : (selected.priceHistory || [])} currentPrice={selected.bestPrice}/><p className="historyHint">{historyCloud ? "Дані з Supabase. Історія оновлюється під час пошуку, ручної перевірки та автоматичної щоденної перевірки." : "Підключи Supabase, щоб SmartBuy накопичував реальну історію ціни між пошуками."}</p><div className="aiBox"><b><Sparkles size={14}/> Smart-висновок</b><p>{selected.aiSummary}</p></div><div className="drawerMarketJump"><b>Перевірити на інших майданчиках</b><div>{marketJumpLinks(selected.title).map(link => <a key={link.name} href={link.url} target="_blank" rel="noreferrer">{link.kind === "private" ? <UserRound size={13}/> : <Globe2 size={13}/>} {link.name}<ExternalLink size={12}/></a>)}</div></div><h3>Ключове</h3><div className="highlights">{selected.highlights.map(x => <span key={x}><Check size={13}/>{x}</span>)}</div><h3>Пропозиції з ринку</h3>{selected.offers.map((o, i) => <div className={`detailOffer ${o.sellerType} ${o.priceAnomaly ? "priceAnomaly" : ""}`} key={`${o.store}-${i}`}><div><b>{o.marketplace} · {conditionLabel(o.condition)}</b><small>{o.sellerType === "private" ? "Приватний продавець" : o.sellerName || o.store}</small>{o.city && <small><MapPin size={12}/> {o.city}</small>}{o.postedAt && <small><Clock3 size={12}/> {o.postedAt}</small>}{o.matchConfidence ? <small>Збіг моделі: {o.matchConfidence}%</small> : null}{o.priceAnomaly ? <small className="anomalyText">⚠ Ціна не використовується як рекомендований мінімум</small> : null}</div><strong>{money.format(o.price)}</strong>{o.url && <a href={o.url} target="_blank" rel="noreferrer">Відкрити <ExternalLink size={14}/></a>}</div>)}</aside></div>}
 
-      <footer><div className="brand"><div className="logo">S</div><span>SmartBuy AI</span></div><p>v0.9 · точне зіставлення моделей · 18 джерел України · захист від цінових аномалій.</p></footer>
+      <footer><div className="brand"><div className="logo">S</div><span>SmartBuy AI</span></div><p>v1.0 · Україна + приватні оголошення + AliExpress / Temu / Amazon · live-ціни відділені від прямого пошуку.</p></footer>
     </main>
   );
 }

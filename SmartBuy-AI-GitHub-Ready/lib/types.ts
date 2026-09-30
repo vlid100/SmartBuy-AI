@@ -4,6 +4,7 @@ export type ListingCondition = "new" | "used" | "refurbished";
 export type MarketFilter = "all" | "new" | "used" | "stores" | "private" | "international";
 export type SourceSearchState = "ok" | "empty" | "blocked" | "timeout" | "error" | "not-run";
 export type SourceAccess = "live" | "direct" | "planned";
+export type MarketRegion = "ukraine" | "international";
 
 export type Offer = {
   id?: string;
@@ -74,6 +75,7 @@ export type SourceLink = {
   url: string;
   label: string;
   access: SourceAccess;
+  region?: MarketRegion;
 };
 
 export type SourceSearchStatus = {

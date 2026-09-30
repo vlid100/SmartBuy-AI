@@ -56,14 +56,14 @@ function makeCoverage(products: Product[]): MarketCoverage {
 }
 
 export async function searchProducts(query: string, category = "", maxPrice?: number, marketFilter: MarketFilter = "all"): Promise<SearchApiResponse> {
-  const sourceScope = marketFilter === "international" ? "international" : "ukraine";
+  const sourceScope = marketFilter === "international" ? "international" : marketFilter === "all" ? "all" : "ukraine";
   const allSourceLinks = getSourceLinks(query, sourceScope);
-  const sourceLinks = marketFilter === "private" ? allSourceLinks.filter(s => s.kind === "private") : marketFilter === "stores" ? allSourceLinks.filter(s => s.kind !== "private" && s.kind !== "international") : allSourceLinks;
+  const sourceLinks = marketFilter === "private" ? allSourceLinks.filter(s => s.kind === "private") : marketFilter === "stores" ? allSourceLinks.filter(s => s.region === "ukraine" && s.kind !== "private" && s.kind !== "international") : allSourceLinks;
 
   if (marketFilter === "international") {
     return {
       query, count: 0, results: [], mode: "hybrid", provider: "AliExpress · Temu · Amazon",
-      warning: "Міжнародний блок ще працює як прямий пошук. Автоматичні інтеграції AliExpress, Temu та Amazon підключимо після українського ринку.",
+      warning: "AliExpress, Temu та Amazon у v1.0 відкривають точний запит напряму. SmartBuy не показує вигадані міжнародні ціни: автоматичне порівняння з доставкою з’явиться лише після надійного офіційного каналу даних.",
       coverage: makeCoverage([]), sourceLinks,
     };
   }
@@ -82,14 +82,14 @@ export async function searchProducts(query: string, category = "", maxPrice?: nu
     const results = filterProducts(grouped, query, category, maxPrice, marketFilter, false);
     const liveOk = live.statuses.filter(s => s.state === "ok").length;
     const liveResponded = live.statuses.filter(s => s.state === "ok" || s.state === "empty").length;
-    const provider = `${sourceCounts.automatic} джерела автоматично · ${sourceCounts.direct} через прямий пошук`;
+    const provider = `Україна + приватні оголошення + 3 міжнародні майданчики · ${sourceCounts.automatic} авто-джерела`;
     let warning: string | undefined;
     if (!results.length) {
       warning = "Автоматичні джерела цього разу не дали розпізнаних товарів. Інші майданчики нижче відкриваються напряму — SmartBuy не вигадує ціни й не обходить захист сайтів.";
     } else if (liveOk < sourceCounts.automatic) {
       warning = `Зібрані реальні пропозиції з доступних джерел. ${liveResponded}/${sourceCounts.automatic} автоматичних джерел відповіли; решта українського ринку доступна нижче через прямий пошук.`;
     } else {
-      warning = `Зібрані реальні пропозиції з ${liveOk} автоматичних джерел. Ще ${sourceCounts.direct} майданчиків доступні через прямий пошук, поки не підключимо дозволені API або товарні фіди.`;
+      warning = `Зібрані реальні пропозиції з ${liveOk} автоматичних джерел. Ще ${sourceCounts.direct} українських майданчиків і 3 міжнародні доступні через прямий пошук.`;
     }
     await snapshotProducts(results);
     return {
@@ -101,7 +101,7 @@ export async function searchProducts(query: string, category = "", maxPrice?: nu
   const preview = filterProducts(previewProducts, query, category, maxPrice, marketFilter, true);
   return {
     query, count: preview.length, results: preview, mode: "market-preview",
-    provider: `${sourceCounts.automatic} автоматично · ${sourceCounts.direct} прямий пошук`,
+    provider: `${sourceCounts.automatic} авто · ${sourceCounts.direct} українських прямих · 3 міжнародні`,
     warning: "Введи конкретний товар. SmartBuy автоматично перевірить джерела, які стабільно доступні з Vercel, а для решти покаже прямі кнопки пошуку.",
     coverage: makeCoverage(preview), sourceLinks,
   };

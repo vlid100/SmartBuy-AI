@@ -1,28 +1,28 @@
-# SmartBuy AI v0.9 — Better Matching + More Ukraine Sources
+# SmartBuy AI v1.0 — Full Market
 
-v0.9 builds on the working v0.8 tracking + Supabase setup.
+v1.0 turns the previous Ukraine-only prototype into a clearer full-market shopping assistant.
 
-## New in v0.9
-- much stricter product identity matching
-  - separates Pro / Pro Max / Ultra / Plus / Mini / Air / FE / SE variants
-  - checks storage (128 / 256 / 512 GB, 1 TB) and common RAM/storage pairs
-  - checks model codes such as DHP486 vs DHP484
-  - rejects accessories (cases, glass, cables, chargers, parts) when the user searched for the device itself
-  - rejects obvious copy/replica signals and Android copies in iPhone searches
-- every live offer now carries a model-match confidence score
-- suspicious price outliers are marked and moved out of the recommended minimum-price calculation
-- canonical product titles are chosen by match quality, not simply by the shortest title
-- Bigl.ua added as a third automatic source alongside Prom.ua and MOYO
-- Ukrainian source launcher expanded to 18 sources:
-  - OLX, Rozetka, Prom.ua, Bigl.ua, MOYO, Hotline, E-Katalog
-  - COMFY, Foxtrot, ALLO, Epicentr, KTC, Citrus, STYLUS, MTA, TELEMART, BRAIN, Shafa
-- offer cards show match percentage and price-anomaly warnings
-- product summary explains when suspicious prices were excluded
+## What is new
+- one search now exposes three market layers:
+  - Ukrainian stores and price sources
+  - private sellers via OLX and Shafa direct search
+  - international search via AliExpress, Temu and Amazon
+- automatic prices remain visually separated from direct-search sources
+- the app never invents a price for a source that SmartBuy cannot reliably read
+- source launcher is grouped into Ukraine / private / international sections
+- every product card has quick jumps to OLX, AliExpress, Temu and Amazon for the exact product title
+- the product drawer has the same cross-market shortcuts
+- zero/unknown ratings are hidden instead of showing `0.0`
+- product cards are more compact while keeping price intelligence, matching confidence and tracking
+- existing Supabase price history, watchlist sync, target prices and Vercel Cron tracking remain compatible
+
+## Ukraine live aggregation
+Best-effort automatic sources remain limited to public pages that can be read reliably without bypassing website protections. Current configured automatic adapters include Prom.ua, Bigl.ua and MOYO. Other Ukrainian sources remain available as direct search links.
+
+## International
+AliExpress, Temu and Amazon are direct-search integrations in v1.0. SmartBuy intentionally does not present their prices as live until a reliable permitted product-data integration is available.
 
 ## Upgrade
-Replace the files in the existing `SmartBuy-AI-GitHub-Ready` folder and commit to GitHub. Vercel will redeploy automatically.
+Replace the files in the existing `SmartBuy-AI-GitHub-Ready` folder and commit to GitHub. Vercel redeploys automatically.
 
-No Supabase SQL migration is required for v0.9. Keep the existing Supabase environment variables unchanged.
-
-## Notes
-Automatic server-side collection is still intentionally limited to sources that can be queried without bypassing website protections. Direct-source buttons remain available for the rest of the Ukrainian market.
+No Supabase migration is required. Keep the existing `SUPABASE_URL` and server key environment variables.
