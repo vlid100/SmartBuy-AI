@@ -3,6 +3,7 @@ export type SellerType = "store" | "private" | "international";
 export type ListingCondition = "new" | "used" | "refurbished";
 export type MarketFilter = "all" | "new" | "used" | "stores" | "private" | "international";
 export type SourceSearchState = "ok" | "empty" | "blocked" | "timeout" | "error" | "not-run";
+export type SourceAccess = "live" | "direct" | "planned";
 
 export type Offer = {
   id?: string;
@@ -56,6 +57,7 @@ export type SourceLink = {
   kind: SellerType | "aggregator";
   url: string;
   label: string;
+  access: SourceAccess;
 };
 
 export type SourceSearchStatus = {

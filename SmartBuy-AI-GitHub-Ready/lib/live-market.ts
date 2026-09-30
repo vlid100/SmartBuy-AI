@@ -1,5 +1,6 @@
 import * as cheerio from "cheerio";
 import type { ListingCondition, Offer, Product, SourceSearchStatus } from "@/lib/types";
+import { liveSourceIds } from "@/lib/source-registry";
 
 export type LiveSource = {
   id: string;
@@ -85,7 +86,9 @@ export const liveSources: LiveSource[] = [
   },
 ];
 
-const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 SmartBuyAI/0.4";
+export const automaticLiveSources = liveSources.filter(source => liveSourceIds.has(source.id));
+
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 SmartBuyAI/0.6";
 const PRICE_RE = /(?:₴|грн\.?|uah)?\s*([0-9][0-9\s\u00a0.,]{1,14})\s*(?:₴|грн\.?|uah)?/i;
 const STOP = new Set(["купити","ціна","ціни","новий","нова","нове","бв","б/в","бу","україна","україні","доставка","товар","смартфон","ноутбук","телефон","оригінал"]);
 
@@ -295,9 +298,9 @@ export async function searchSource(source: LiveSource, query: string): Promise<S
 
 export async function searchUkraineLive(query: string) {
   if (process.env.SMARTBUY_LIVE_FETCH_ENABLED === "false") {
-    return { offers: [] as Offer[], statuses: liveSources.map(s => ({ id: s.id, name: s.name, state: "not-run" as const, offerCount: 0, durationMs: 0, message: "live fetch вимкнено" })) };
+    return { offers: [] as Offer[], statuses: automaticLiveSources.map(s => ({ id: s.id, name: s.name, state: "not-run" as const, offerCount: 0, durationMs: 0, message: "live fetch вимкнено" })) };
   }
-  const settled = await Promise.all(liveSources.map(source => searchSource(source, query)));
+  const settled = await Promise.all(automaticLiveSources.map(source => searchSource(source, query)));
   return { offers: settled.flatMap(x => x.offers), statuses: settled.map(x => x.status) };
 }
 

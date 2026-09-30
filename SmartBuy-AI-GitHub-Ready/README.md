@@ -1,48 +1,49 @@
-# SmartBuy AI v0.4 — Live Ukraine Market
+# SmartBuy AI v0.6 — Price History + Tracking
 
-SmartBuy AI — Next.js/Vercel веб-застосунок, який шукає покупки одночасно в українських магазинах та на приватному ринку.
+SmartBuy AI v0.6 keeps the hybrid Ukraine market search from v0.5 and adds an optional Supabase layer for price history and watchlist sync.
 
-## Що нового у v0.4
+## What is new
 
-- серверний **live-збір публічних пошукових сторінок** без API-ключів;
-- джерела: OLX, Rozetka, Prom.ua, Hotline, COMFY, Foxtrot, ALLO, Епіцентр, MOYO, TELEMART, BRAIN, Shafa;
-- кожне джерело має окремий статус: знайдено / відповів без розпізнаних карток / заблоковано / тайм-аут / помилка;
-- SmartBuy не підставляє демонстраційні ціни під виглядом live-даних;
-- автоматично збирає назву, ціну, посилання та зображення, якщо вони доступні у HTML/JSON-LD/вбудованому JSON;
-- однакові або дуже схожі назви автоматично групуються в одну картку товару;
-- окремо рахуються нові та б/в пропозиції;
-- Smart-висновок рахується з реальних знайдених цін: мінімум, медіана, різниця нового/б/в;
-- прямі кнопки на всі джерела залишаються навіть тоді, коли сайт блокує серверний збір.
+- Automatic price snapshots for real search results.
+- 90-day price-history chart in the product drawer.
+- Current / minimum / average price and a simple price signal.
+- Watchlist with a target price per product.
+- Sync code: use the same code on another device to load the same cloud watchlist.
+- Local fallback: the site still works if Supabase is not configured.
+- No login is required for v0.6.
 
-## Важливе обмеження
+## Deploy update
 
-Це **best-effort live collector**. Частина магазинів рендерить каталог JavaScript-ом або блокує запити з дата-центрів, у тому числі Vercel. SmartBuy не обходить CAPTCHA, логін, антибот-захист або інші обмеження. Для стабільної production-інтеграції конкретного майданчика потрібен його офіційний API, товарний feed, партнерська програма або інший дозволений канал.
+Keep the same Vercel Root Directory: `SmartBuy-AI-GitHub-Ready`.
+Replace the old project files with this version and commit to GitHub. Vercel will redeploy automatically.
 
-OLX Partner API існує, але офіційна документація описує керування оголошеннями/повідомленнями користувача та конфігураційні дані, а не загальний пошук усіх публічних оголошень. Тому v0.4 для пошуку використовує лише публічну пошукову сторінку OLX і чесно показує, якщо серверний доступ не спрацював.
+## Enable Supabase cloud features
 
-## Запуск
+1. Create/open a Supabase project.
+2. Open **SQL Editor** and run all SQL from `supabase/schema.sql`.
+3. In Vercel open your SmartBuy project -> **Settings -> Environment Variables**.
+4. Add:
+   - `SUPABASE_URL` = your Supabase project URL
+   - `SUPABASE_SERVICE_ROLE_KEY` = your Supabase service-role key
+5. Apply to Production (and Preview if you want) and redeploy.
+
+Important: `SUPABASE_SERVICE_ROLE_KEY` is server-only. Never expose it in client code and never rename it to a `NEXT_PUBLIC_*` variable.
+
+## How history works
+
+When a real SmartBuy search returns products, the server stores the current best price. A new price-history point is recorded when the best price changes or at least 6 hours have passed since the previous snapshot.
+
+The history therefore grows as the product is searched over time. v0.6 does not yet run background scheduled searches automatically; that is prepared for a later version.
+
+## Sync code
+
+Every browser receives a random SmartBuy sync code. The code is stored locally. When Supabase is enabled, the server stores only a SHA-256 hash of that code in the watchlist table. To use the same watchlist on another device, copy the code from **Відстеження** and enter it there.
+
+## Local run
 
 ```bash
 npm install
 npm run dev
 ```
 
-Відкрий `http://localhost:3000`.
-
-## Vercel
-
-Спеціальні ключі для live collector не потрібні. Після заміни файлів у GitHub Vercel створить новий deployment.
-
-Опційні змінні:
-
-```env
-SMARTBUY_LIVE_FETCH_ENABLED=true
-SMARTBUY_SOURCE_TIMEOUT_MS=4500
-SMARTBUY_MAX_PER_SOURCE=10
-```
-
-Якщо конкретні джерела відповідають повільно, `SMARTBUY_SOURCE_TIMEOUT_MS` можна збільшити до 7000–9000 мс.
-
-## Supabase
-
-Поки необов'язковий. Схема `supabase/schema.sql` уже підготовлена для наступного етапу: зберігання listing-ів, історії цін, watchlist і синхронізації.
+Open http://localhost:3000

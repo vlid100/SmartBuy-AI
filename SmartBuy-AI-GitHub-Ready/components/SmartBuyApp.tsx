@@ -2,11 +2,11 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
-  BadgeCheck, Bell, Check, ChevronDown, Clock3, ExternalLink, GitCompareArrows,
-  Globe2, Heart, Info, MapPin, Search, ShieldCheck, ShoppingBag, SlidersHorizontal,
-  Sparkles, Star, Store, UserRound, X
+  BadgeCheck, Bell, Check, ChevronDown, Clock3, Cloud, CloudOff, Copy, ExternalLink, GitCompareArrows,
+  Globe2, Heart, Info, MapPin, RefreshCw, Search, ShieldCheck, ShoppingBag, SlidersHorizontal,
+  Sparkles, Star, Store, Target, TrendingDown, UserRound, X
 } from "lucide-react";
-import type { MarketFilter, Offer, Product, SearchApiResponse, SourceLink, SourceSearchStatus } from "@/lib/types";
+import type { MarketFilter, Offer, PricePoint, Product, SearchApiResponse, SourceLink, SourceSearchStatus } from "@/lib/types";
 
 const categories = ["Усі", "Смартфони", "Ноутбуки", "Телевізори", "Для дому", "Інструменти"];
 const marketFilters: { id: MarketFilter; label: string; icon: "all" | "new" | "used" | "store" | "private" | "world" }[] = [
@@ -40,6 +40,37 @@ function filterIcon(id: MarketFilter) {
   return null;
 }
 
+function makeSyncKey() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, b => chars[b % chars.length]).join("");
+}
+
+function PriceHistoryChart({ points, currentPrice }: { points: PricePoint[]; currentPrice: number }) {
+  const safe = points.length ? points : [{ date: new Date().toISOString(), price: currentPrice }];
+  const prices = safe.map(p => p.price);
+  const min = Math.min(...prices), max = Math.max(...prices);
+  const average = prices.reduce((sum, value) => sum + value, 0) / prices.length;
+  const signal = safe.length < 2 ? "Потрібно більше даних" : currentPrice <= min * 1.03 ? "Близько до мінімуму" : currentPrice <= average ? "Ціна виглядає нормально" : "Вище середньої історичної";
+  const span = Math.max(1, max - min);
+  const coords = safe.map((p, i) => {
+    const x = safe.length === 1 ? 50 : 4 + (i / (safe.length - 1)) * 92;
+    const y = 88 - ((p.price - min) / span) * 72;
+    return `${x},${y}`;
+  }).join(" ");
+  return (
+    <div className="priceHistoryCard">
+      <div className="historySignal"><TrendingDown size={14}/><b>{signal}</b></div>
+      <div className="historyStats"><div><span>Зараз</span><b>{money.format(currentPrice)}</b></div><div><span>Мінімум</span><b>{money.format(min)}</b></div><div><span>Середня</span><b>{money.format(average)}</b></div></div>
+      <svg className="priceChart" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="Графік історії ціни">
+        <polyline points={coords} fill="none" stroke="currentColor" strokeWidth="3" vectorEffect="non-scaling-stroke"/>
+      </svg>
+      <div className="historyAxis"><span>{safe.length > 1 ? new Date(safe[0].date).toLocaleDateString("uk-UA") : "перший запис"}</span><span>сьогодні</span></div>
+    </div>
+  );
+}
+
 export default function SmartBuyApp() {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("Усі");
@@ -58,15 +89,47 @@ export default function SmartBuyApp() {
   const [coverage, setCoverage] = useState<SearchApiResponse["coverage"]>({ totalOffers: 0, storeOffers: 0, privateOffers: 0, newOffers: 0, usedOffers: 0, sourceCount: 0 });
   const [selected, setSelected] = useState<Product | null>(null);
   const [compareOpen, setCompareOpen] = useState(false);
+  const [targetPrices, setTargetPrices] = useState<Record<string, number>>({});
+  const [syncKey, setSyncKey] = useState("");
+  const [syncInput, setSyncInput] = useState("");
+  const [cloudEnabled, setCloudEnabled] = useState<boolean | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [history, setHistory] = useState<PricePoint[]>([]);
+  const [historyCloud, setHistoryCloud] = useState(false);
 
   useEffect(() => {
+    let key = "";
     try {
       const saved = localStorage.getItem("smartbuy-watchlist-v3");
       if (saved) setWatching(JSON.parse(saved));
+      const savedTargets = localStorage.getItem("smartbuy-targets-v1");
+      if (savedTargets) setTargetPrices(JSON.parse(savedTargets));
+      key = localStorage.getItem("smartbuy-sync-key-v1") || makeSyncKey();
+      localStorage.setItem("smartbuy-sync-key-v1", key);
+      setSyncKey(key);
     } catch {}
+    if (key) void loadCloudWatchlist(key);
     void runSearch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!selected) { setHistory([]); return; }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch(`/api/history?product=${encodeURIComponent(selected.id)}&days=90`, { cache: "no-store" });
+        const data = await response.json();
+        if (!cancelled) {
+          setHistory(Array.isArray(data.points) ? data.points : []);
+          setHistoryCloud(Boolean(data.cloud));
+        }
+      } catch {
+        if (!cancelled) { setHistory(selected.priceHistory || []); setHistoryCloud(false); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selected]);
 
   async function runSearch(nextQuery = query, nextCategory = category, nextMarket = marketFilter) {
     setLoading(true);
@@ -115,14 +178,90 @@ export default function SmartBuyApp() {
     });
   }
 
-  function toggleWatch(product: Product) {
+  async function loadCloudWatchlist(key = syncKey) {
+    if (!key) return;
+    setSyncing(true);
+    try {
+      const response = await fetch(`/api/watchlist?token=${encodeURIComponent(key)}`, { cache: "no-store" });
+      const data = await response.json();
+      setCloudEnabled(Boolean(data.cloud));
+      if (data.cloud && Array.isArray(data.items)) {
+        const cloudProducts: Record<string, Product> = {};
+        const cloudTargets: Record<string, number> = {};
+        for (const item of data.items) {
+          if (item?.product?.id) cloudProducts[item.product.id] = item.product;
+          if (item?.product?.id && Number(item.targetPrice) > 0) cloudTargets[item.product.id] = Number(item.targetPrice);
+        }
+        setWatching(current => {
+          const merged = { ...current, ...cloudProducts };
+          localStorage.setItem("smartbuy-watchlist-v3", JSON.stringify(merged));
+          return merged;
+        });
+        setTargetPrices(current => {
+          const merged = { ...current, ...cloudTargets };
+          localStorage.setItem("smartbuy-targets-v1", JSON.stringify(merged));
+          return merged;
+        });
+      }
+    } catch { setCloudEnabled(false); } finally { setSyncing(false); }
+  }
+
+  async function saveWatchToCloud(product: Product, targetPrice?: number) {
+    if (!syncKey) return;
+    try {
+      const response = await fetch("/api/watchlist", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: syncKey, product, targetPrice }) });
+      const data = await response.json();
+      setCloudEnabled(Boolean(data.cloud));
+    } catch { setCloudEnabled(false); }
+  }
+
+  async function toggleWatch(product: Product) {
+    const exists = Boolean(watching[product.id]);
     setWatching(current => {
       const next = { ...current };
-      if (next[product.id]) delete next[product.id];
-      else next[product.id] = product;
+      if (exists) delete next[product.id]; else next[product.id] = product;
       localStorage.setItem("smartbuy-watchlist-v3", JSON.stringify(next));
       return next;
     });
+    if (!syncKey) return;
+    try {
+      const response = await fetch("/api/watchlist", {
+        method: exists ? "DELETE" : "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(exists ? { token: syncKey, productKey: product.id } : { token: syncKey, product, targetPrice: targetPrices[product.id] }),
+      });
+      const data = await response.json();
+      setCloudEnabled(Boolean(data.cloud));
+    } catch { setCloudEnabled(false); }
+  }
+
+  function updateTarget(product: Product, value: string) {
+    const amount = Number(value.replace(/\D/g, ""));
+    setTargetPrices(current => {
+      const next = { ...current };
+      if (amount > 0) next[product.id] = amount; else delete next[product.id];
+      localStorage.setItem("smartbuy-targets-v1", JSON.stringify(next));
+      return next;
+    });
+  }
+
+  async function commitTarget(product: Product) {
+    if (!watching[product.id]) {
+      setWatching(current => { const next = { ...current, [product.id]: product }; localStorage.setItem("smartbuy-watchlist-v3", JSON.stringify(next)); return next; });
+    }
+    await saveWatchToCloud(product, targetPrices[product.id]);
+  }
+
+  async function useSyncCode() {
+    const clean = syncInput.trim().toUpperCase().replace(/[^A-Z2-9]/g, "");
+    if (clean.length < 8) return;
+    localStorage.setItem("smartbuy-sync-key-v1", clean);
+    setSyncKey(clean);
+    setSyncInput("");
+    await loadCloudWatchlist(clean);
+  }
+
+  async function copySyncCode() {
+    try { await navigator.clipboard.writeText(syncKey); } catch {}
   }
 
   const watchProducts = useMemo(() => Object.values(watching), [watching]);
@@ -164,8 +303,8 @@ export default function SmartBuyApp() {
         {tab === "search" && (
           <>
             <div className="sourceStatus marketStatus">
-              <div><BadgeCheck size={18}/><b>Ринок України v0.4 LIVE</b><span>{provider}</span></div>
-              <p><Info size={15}/> Пошук автоматично перевіряє публічні сторінки джерел. Заблоковані сайти не підміняються вигаданими цінами.</p>
+              <div><BadgeCheck size={18}/><b>Ринок України v0.6</b><span>{provider}</span></div>
+              <p><Info size={15}/> Автоматично збираємо дані лише там, де це стабільно працює. Інші майданчики відкриваємо прямим пошуком — без вигаданих цін і без обходу захисту.</p>
             </div>
 
             <div className="marketFilters">
@@ -194,15 +333,15 @@ export default function SmartBuyApp() {
             {sourceLinks.length > 0 && (
               <section className="sourceLauncher">
                 <div className="sourceLauncherHead">
-                  <div><h3>Джерела цього пошуку</h3><p>SmartBuy пробує зібрати картки автоматично. Біля кожного джерела видно результат; кнопка завжди відкриває реальний пошук на самому майданчику.</p></div>
-                  <span>{sourceLinks.length} джерел</span>
+                  <div><h3>Джерела цього пошуку</h3><p>Prom.ua і MOYO перевіряються автоматично. Для решти джерел кнопка відкриває той самий запит прямо на майданчику; пізніше сюди підключимо дозволені API та товарні фіди.</p></div>
+                  <span>{sourceLinks.filter(s => s.access === "live").length} авто · {sourceLinks.filter(s => s.access === "direct").length} прямий</span>
                 </div>
                 <div className="sourceLinks">
                   {sourceLinks.map(source => {
                     const status = sourceStatuses.find(item => item.id === source.id);
-                    const statusText = !status ? source.label : status.state === "ok" ? `${status.offerCount} знайдено` : status.state === "blocked" ? "серверний доступ заблоковано" : status.state === "timeout" ? "тайм-аут" : status.state === "empty" ? "відповів · без розпізнаних карток" : status.state === "error" ? "помилка відповіді" : source.label;
+                    const statusText = source.access === "direct" ? "прямий пошук" : source.access === "planned" ? "підключимо пізніше" : !status ? "автоматичне джерело" : status.state === "ok" ? `${status.offerCount} знайдено` : status.state === "blocked" ? "тимчасово недоступне" : status.state === "timeout" ? "не відповіло вчасно" : status.state === "empty" ? "відповіло · карток не знайдено" : status.state === "error" ? "тимчасова помилка" : "автоматичне джерело";
                     return (
-                      <a key={source.id} href={source.url} target="_blank" rel="noreferrer" className={`sourceChip ${source.kind} ${status ? `status-${status.state}` : ""}`}>
+                      <a key={source.id} href={source.url} target="_blank" rel="noreferrer" className={`sourceChip ${source.kind} access-${source.access} ${status ? `status-${status.state}` : ""}`}>
                         <span>{source.kind === "private" ? <UserRound size={16}/> : source.kind === "international" ? <Globe2 size={16}/> : <Store size={16}/>}</span>
                         <div><b>{source.name}</b><small>{statusText}</small></div>
                         <ExternalLink size={14}/>
@@ -215,6 +354,21 @@ export default function SmartBuyApp() {
 
             {warning && <div className="previewWarning"><Info size={17}/><p>{warning}</p></div>}
           </>
+        )}
+
+        {tab === "watch" && (
+          <section className="syncPanel">
+            <div className="syncPanelMain">
+              <div className={`cloudBadge ${cloudEnabled ? "on" : "off"}`}>{cloudEnabled ? <Cloud size={18}/> : <CloudOff size={18}/>}<span>{cloudEnabled ? "Хмарна синхронізація активна" : "Локальне відстеження"}</span></div>
+              <h2>Відстеження цін</h2>
+              <p>{cloudEnabled ? "Товари, цільові ціни та історія зберігаються в Supabase. На іншому пристрої введи той самий код синхронізації." : "Сайт працює без Supabase: товари зберігаються тільки в цьому браузері. Після підключення Supabase увімкнеться історія та синхронізація."}</p>
+            </div>
+            <div className="syncCodeBox">
+              <span>Код синхронізації</span>
+              <div><code>{syncKey || "—"}</code><button onClick={copySyncCode} title="Копіювати"><Copy size={15}/></button><button onClick={() => void loadCloudWatchlist()} title="Оновити" disabled={syncing}><RefreshCw size={15}/></button></div>
+              <div className="syncImport"><input value={syncInput} onChange={e => setSyncInput(e.target.value)} placeholder="Код з іншого пристрою"/><button onClick={() => void useSyncCode()}>Підключити</button></div>
+            </div>
+          </section>
         )}
 
         <div className="resultsHeader">
@@ -275,6 +429,14 @@ export default function SmartBuyApp() {
                     ))}
                   </details>
 
+                  {tab === "watch" && (
+                    <div className="targetPriceBox">
+                      <div><Target size={15}/><span>Цільова ціна</span></div>
+                      <div><input inputMode="numeric" value={targetPrices[product.id] || ""} onChange={e => updateTarget(product, e.target.value)} placeholder="наприклад 25000"/><span>₴</span><button onClick={() => void commitTarget(product)}>Зберегти</button></div>
+                      {targetPrices[product.id] && <small className={product.bestPrice <= targetPrices[product.id] ? "targetHit" : ""}>{product.bestPrice <= targetPrices[product.id] ? "Ціль уже досягнута" : `До цілі ще ${money.format(product.bestPrice - targetPrices[product.id])}`}</small>}
+                    </div>
+                  )}
+
                   <div className="cardActions">
                     <button className={`compare ${compare.some(x => x.id === product.id) ? "selected" : ""}`} onClick={() => toggleCompare(product)}><GitCompareArrows size={15}/>{compare.some(x => x.id === product.id) ? "Додано" : "Порівняти"}</button>
                     {product.productUrl && <a className="buyButton" href={product.productUrl} target="_blank" rel="noreferrer">Відкрити <ExternalLink size={14}/></a>}
@@ -290,9 +452,9 @@ export default function SmartBuyApp() {
 
       {compareOpen && <div className="modalBackdrop" onMouseDown={() => setCompareOpen(false)}><div className="compareModal" onMouseDown={e => e.stopPropagation()}><div className="modalHeader"><div><h2>Порівняння</h2><p>До 3 моделей поруч.</p></div><button className="closeButton" onClick={() => setCompareOpen(false)}><X/></button></div>{compare.length === 0 ? <div className="empty"><p>Додай товари кнопкою «Порівняти».</p></div> : <div className="compareTableWrap"><table className="compareTable"><thead><tr><th></th>{compare.map(p => <th key={p.id}>{p.title}</th>)}</tr></thead><tbody><tr><td>Найнижча ціна</td>{compare.map(p => <td key={p.id}><b>{money.format(p.bestPrice)}</b></td>)}</tr><tr><td>Нове від</td>{compare.map(p => <td key={p.id}>{bestByCondition(p.offers,"new") ? money.format(bestByCondition(p.offers,"new")!) : "—"}</td>)}</tr><tr><td>Б/в від</td>{compare.map(p => <td key={p.id}>{bestByCondition(p.offers,"used") ? money.format(bestByCondition(p.offers,"used")!) : "—"}</td>)}</tr><tr><td>Smart score</td>{compare.map(p => <td key={p.id}>{p.score}/100</td>)}</tr><tr><td>Пропозицій</td>{compare.map(p => <td key={p.id}>{p.offers.length}</td>)}</tr></tbody></table></div>}</div></div>}
 
-      {selected && <div className="modalBackdrop detailBackdrop" onMouseDown={() => setSelected(null)}><aside className="detailDrawer" onMouseDown={e => e.stopPropagation()}><button className="closeButton drawerClose" onClick={() => setSelected(null)}><X/></button><div className="detailVisual">{selected.imageUrl ? <img src={selected.imageUrl} alt={selected.title}/> : selected.image}</div><div className="score"><Sparkles size={14}/> Smart score {selected.score}/100</div><h2>{selected.title}</h2><p className="subtitle">{selected.subtitle}</p><div className="detailPrice">від {money.format(selected.bestPrice)}</div><div className="aiBox"><b><Sparkles size={14}/> Smart-висновок</b><p>{selected.aiSummary}</p></div><h3>Ключове</h3><div className="highlights">{selected.highlights.map(x => <span key={x}><Check size={13}/>{x}</span>)}</div><h3>Пропозиції з ринку</h3>{selected.offers.map((o, i) => <div className={`detailOffer ${o.sellerType}`} key={`${o.store}-${i}`}><div><b>{o.marketplace} · {conditionLabel(o.condition)}</b><small>{o.sellerType === "private" ? "Приватний продавець" : o.sellerName || o.store}</small>{o.city && <small><MapPin size={12}/> {o.city}</small>}{o.postedAt && <small><Clock3 size={12}/> {o.postedAt}</small>}</div><strong>{money.format(o.price)}</strong>{o.url && <a href={o.url} target="_blank" rel="noreferrer">Відкрити <ExternalLink size={14}/></a>}</div>)}</aside></div>}
+      {selected && <div className="modalBackdrop detailBackdrop" onMouseDown={() => setSelected(null)}><aside className="detailDrawer" onMouseDown={e => e.stopPropagation()}><button className="closeButton drawerClose" onClick={() => setSelected(null)}><X/></button><div className="detailVisual">{selected.imageUrl ? <img src={selected.imageUrl} alt={selected.title}/> : selected.image}</div><div className="score"><Sparkles size={14}/> Smart score {selected.score}/100</div><h2>{selected.title}</h2><p className="subtitle">{selected.subtitle}</p><div className="detailPrice">від {money.format(selected.bestPrice)}</div><div className="drawerTrackRow"><button className={`trackButton ${watching[selected.id] ? "saved" : ""}`} onClick={() => void toggleWatch(selected)}><Heart size={16} fill={watching[selected.id] ? "currentColor" : "none"}/>{watching[selected.id] ? "Відстежується" : "Відстежувати"}</button><div className="drawerTarget"><Target size={14}/><input inputMode="numeric" value={targetPrices[selected.id] || ""} onChange={e => updateTarget(selected, e.target.value)} placeholder="цільова ціна"/><span>₴</span><button onClick={() => void commitTarget(selected)}>OK</button></div></div><h3><TrendingDown size={16}/> Історія ціни</h3><PriceHistoryChart points={history.length ? history : (selected.priceHistory || [])} currentPrice={selected.bestPrice}/><p className="historyHint">{historyCloud ? "Дані з Supabase. Новий запис додається під час реального пошуку, якщо ціна змінилась або минуло 6 годин." : "Підключи Supabase, щоб SmartBuy накопичував реальну історію ціни між пошуками."}</p><div className="aiBox"><b><Sparkles size={14}/> Smart-висновок</b><p>{selected.aiSummary}</p></div><h3>Ключове</h3><div className="highlights">{selected.highlights.map(x => <span key={x}><Check size={13}/>{x}</span>)}</div><h3>Пропозиції з ринку</h3>{selected.offers.map((o, i) => <div className={`detailOffer ${o.sellerType}`} key={`${o.store}-${i}`}><div><b>{o.marketplace} · {conditionLabel(o.condition)}</b><small>{o.sellerType === "private" ? "Приватний продавець" : o.sellerName || o.store}</small>{o.city && <small><MapPin size={12}/> {o.city}</small>}{o.postedAt && <small><Clock3 size={12}/> {o.postedAt}</small>}</div><strong>{money.format(o.price)}</strong>{o.url && <a href={o.url} target="_blank" rel="noreferrer">Відкрити <ExternalLink size={14}/></a>}</div>)}</aside></div>}
 
-      <footer><div className="brand"><div className="logo">S</div><span>SmartBuy AI</span></div><p>v0.4 LIVE · автоматичний best-effort пошук по ринку України.</p></footer>
+      <footer><div className="brand"><div className="logo">S</div><span>SmartBuy AI</span></div><p>v0.6 · історія цін · цільова ціна · хмарне відстеження.</p></footer>
     </main>
   );
 }

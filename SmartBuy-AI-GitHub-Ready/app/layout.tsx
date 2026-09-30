@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "SmartBuy AI — знайди й порівняй",
-  description: "Live-пошук товарів, цін і приватних оголошень по ринку України."
+  description: "Гібридний пошук товарів, цін і приватних оголошень по ринку України."
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

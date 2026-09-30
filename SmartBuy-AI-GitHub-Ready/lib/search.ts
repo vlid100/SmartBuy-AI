@@ -1,7 +1,8 @@
 import { products as previewProducts } from "@/lib/mock-data";
-import { getSourceLinks } from "@/lib/source-registry";
+import { getSourceLinks, sourceCounts } from "@/lib/source-registry";
 import { groupLiveOffers, searchUkraineLive } from "@/lib/live-market";
 import type { MarketCoverage, MarketFilter, Offer, Product, SearchApiResponse } from "@/lib/types";
+import { snapshotProducts } from "@/lib/persistence";
 
 function offerMatchesFilter(offer: Offer, filter: MarketFilter) {
   switch (filter) {
@@ -52,38 +53,52 @@ function makeCoverage(products: Product[]): MarketCoverage {
 
 export async function searchProducts(query: string, category = "", maxPrice?: number, marketFilter: MarketFilter = "all"): Promise<SearchApiResponse> {
   const sourceScope = marketFilter === "international" ? "international" : "ukraine";
-  const sourceLinks = getSourceLinks(query, sourceScope);
+  const allSourceLinks = getSourceLinks(query, sourceScope);
+  const sourceLinks = marketFilter === "private" ? allSourceLinks.filter(s => s.kind === "private") : marketFilter === "stores" ? allSourceLinks.filter(s => s.kind !== "private" && s.kind !== "international") : allSourceLinks;
 
   if (marketFilter === "international") {
     return {
-      query, count: 0, results: [], mode: "live", provider: "AliExpress · Temu · Amazon",
-      warning: "Автоматичне міжнародне збирання ще не ввімкнене. Кнопки нижче відкривають реальний пошук на AliExpress, Temu та Amazon.",
+      query, count: 0, results: [], mode: "hybrid", provider: "AliExpress · Temu · Amazon",
+      warning: "Міжнародний блок ще працює як прямий пошук. Автоматичні інтеграції AliExpress, Temu та Amazon підключимо після українського ринку.",
       coverage: makeCoverage([]), sourceLinks,
     };
   }
 
   if (query.trim()) {
+    if (marketFilter === "private") {
+      return {
+        query, count: 0, results: [], mode: "hybrid",
+        provider: "OLX · Shafa — прямий пошук",
+        warning: "Приватні оголошення зараз не збираються автоматично з Vercel: OLX та Shafa не дали стабільного серверного доступу. Нижче SmartBuy відкриває той самий запит прямо на цих майданчиках.",
+        coverage: makeCoverage([]), sourceLinks, sourceStatuses: [],
+      };
+    }
     const live = await searchUkraineLive(query.trim());
     const grouped = groupLiveOffers(live.offers, query.trim());
     const results = filterProducts(grouped, query, category, maxPrice, marketFilter, false);
-    const ok = live.statuses.filter(s => s.state === "ok").length;
-    const blocked = live.statuses.filter(s => s.state === "blocked").length;
-    const reachable = live.statuses.filter(s => s.state === "ok" || s.state === "empty").length;
+    const liveOk = live.statuses.filter(s => s.state === "ok").length;
+    const liveResponded = live.statuses.filter(s => s.state === "ok" || s.state === "empty").length;
+    const provider = `${sourceCounts.automatic} джерела автоматично · ${sourceCounts.direct} через прямий пошук`;
     let warning: string | undefined;
-    if (!results.length) warning = "Автоматичний збір цього разу не повернув розпізнаних товарів. Частина сайтів може рендерити картки JavaScript-ом або блокувати серверні запити. Нижче залишені прямі кнопки пошуку — фальшиві ціни не підставляються.";
-    else if (blocked) warning = `Реальні картки зібрані автоматично. ${blocked} джерел заблокували серверний запит, тому їхні результати можна відкрити прямою кнопкою.`;
+    if (!results.length) {
+      warning = "Автоматичні джерела цього разу не дали розпізнаних товарів. Інші майданчики нижче відкриваються напряму — SmartBuy не вигадує ціни й не обходить захист сайтів.";
+    } else if (liveOk < sourceCounts.automatic) {
+      warning = `Зібрані реальні пропозиції з доступних джерел. ${liveResponded}/${sourceCounts.automatic} автоматичних джерел відповіли; решта українського ринку доступна нижче через прямий пошук.`;
+    } else {
+      warning = `Зібрані реальні пропозиції з ${liveOk} автоматичних джерел. Ще ${sourceCounts.direct} майданчиків доступні через прямий пошук, поки не підключимо дозволені API або товарні фіди.`;
+    }
+    await snapshotProducts(results);
     return {
-      query, count: results.length, results, mode: "live",
-      provider: `Live Market: ${ok}/${live.statuses.length} джерел дали картки · ${reachable}/${live.statuses.length} відповіли`,
-      warning, coverage: makeCoverage(results), sourceLinks, sourceStatuses: live.statuses,
+      query, count: results.length, results, mode: "hybrid",
+      provider, warning, coverage: makeCoverage(results), sourceLinks, sourceStatuses: live.statuses,
     };
   }
 
   const preview = filterProducts(previewProducts, query, category, maxPrice, marketFilter, true);
   return {
     query, count: preview.length, results: preview, mode: "market-preview",
-    provider: "Україна: магазини + приватні оголошення",
-    warning: "Введи конкретний товар у пошуку — тоді v0.4 запустить автоматичний live-збір. Без запиту показуються лише приклади структури.",
+    provider: `${sourceCounts.automatic} автоматично · ${sourceCounts.direct} прямий пошук`,
+    warning: "Введи конкретний товар. SmartBuy автоматично перевірить джерела, які стабільно доступні з Vercel, а для решти покаже прямі кнопки пошуку.",
     coverage: makeCoverage(preview), sourceLinks,
   };
 }
