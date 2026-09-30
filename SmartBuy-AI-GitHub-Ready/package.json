@@ -1,6 +1,6 @@
 {
   "name": "smartbuy-ai",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -13,7 +13,8 @@
     "lucide-react": "^0.468.0",
     "next": "16.3.3",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "cheerio": "^1.1.2"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

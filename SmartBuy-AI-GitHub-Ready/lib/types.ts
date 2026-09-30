@@ -1,10 +1,12 @@
-export type SearchMode = "market-preview" | "demo";
+export type SearchMode = "live" | "hybrid" | "market-preview" | "demo";
 export type SellerType = "store" | "private" | "international";
 export type ListingCondition = "new" | "used" | "refurbished";
 export type MarketFilter = "all" | "new" | "used" | "stores" | "private" | "international";
+export type SourceSearchState = "ok" | "empty" | "blocked" | "timeout" | "error" | "not-run";
 
 export type Offer = {
   id?: string;
+  title?: string;
   store: string;
   marketplace: string;
   sellerName?: string;
@@ -20,13 +22,12 @@ export type Offer = {
   postedAt?: string;
   negotiable?: boolean;
   url?: string;
+  imageUrl?: string;
+  externalId?: string;
   source?: string;
 };
 
-export type PricePoint = {
-  date: string;
-  price: number;
-};
+export type PricePoint = { date: string; price: number };
 
 export type Product = {
   id: string;
@@ -57,6 +58,15 @@ export type SourceLink = {
   label: string;
 };
 
+export type SourceSearchStatus = {
+  id: string;
+  name: string;
+  state: SourceSearchState;
+  offerCount: number;
+  durationMs: number;
+  message?: string;
+};
+
 export type MarketCoverage = {
   totalOffers: number;
   storeOffers: number;
@@ -75,4 +85,5 @@ export type SearchApiResponse = {
   warning?: string;
   coverage: MarketCoverage;
   sourceLinks: SourceLink[];
+  sourceStatuses?: SourceSearchStatus[];
 };

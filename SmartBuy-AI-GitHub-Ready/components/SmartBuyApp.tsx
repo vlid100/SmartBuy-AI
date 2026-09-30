@@ -6,7 +6,7 @@ import {
   Globe2, Heart, Info, MapPin, Search, ShieldCheck, ShoppingBag, SlidersHorizontal,
   Sparkles, Star, Store, UserRound, X
 } from "lucide-react";
-import type { MarketFilter, Offer, Product, SearchApiResponse, SourceLink } from "@/lib/types";
+import type { MarketFilter, Offer, Product, SearchApiResponse, SourceLink, SourceSearchStatus } from "@/lib/types";
 
 const categories = ["Усі", "Смартфони", "Ноутбуки", "Телевізори", "Для дому", "Інструменти"];
 const marketFilters: { id: MarketFilter; label: string; icon: "all" | "new" | "used" | "store" | "private" | "world" }[] = [
@@ -54,6 +54,7 @@ export default function SmartBuyApp() {
   const [provider, setProvider] = useState("Україна: магазини + приватні оголошення");
   const [warning, setWarning] = useState<string | undefined>();
   const [sourceLinks, setSourceLinks] = useState<SourceLink[]>([]);
+  const [sourceStatuses, setSourceStatuses] = useState<SourceSearchStatus[]>([]);
   const [coverage, setCoverage] = useState<SearchApiResponse["coverage"]>({ totalOffers: 0, storeOffers: 0, privateOffers: 0, newOffers: 0, usedOffers: 0, sourceCount: 0 });
   const [selected, setSelected] = useState<Product | null>(null);
   const [compareOpen, setCompareOpen] = useState(false);
@@ -82,11 +83,13 @@ export default function SmartBuyApp() {
       setProvider(data.provider || "Україна");
       setWarning(data.warning);
       setSourceLinks(data.sourceLinks || []);
+      setSourceStatuses(data.sourceStatuses || []);
       setCoverage(data.coverage || { totalOffers: 0, storeOffers: 0, privateOffers: 0, newOffers: 0, usedOffers: 0, sourceCount: 0 });
       setSearched(Boolean(nextQuery.trim() || nextCategory !== "Усі" || maxPrice || nextMarket !== "all"));
     } catch {
       setProducts([]);
       setSourceLinks([]);
+      setSourceStatuses([]);
       setWarning("Не вдалося виконати пошук. Перевір підключення й спробуй ще раз.");
     } finally {
       setLoading(false);
@@ -161,8 +164,8 @@ export default function SmartBuyApp() {
         {tab === "search" && (
           <>
             <div className="sourceStatus marketStatus">
-              <div><BadgeCheck size={18}/><b>Ринок України v0.3</b><span>{provider}</span></div>
-              <p><Info size={15}/> OLX і приватні продавці тепер окрема частина пошуку, а не додаток до магазинів.</p>
+              <div><BadgeCheck size={18}/><b>Ринок України v0.4 LIVE</b><span>{provider}</span></div>
+              <p><Info size={15}/> Пошук автоматично перевіряє публічні сторінки джерел. Заблоковані сайти не підміняються вигаданими цінами.</p>
             </div>
 
             <div className="marketFilters">
@@ -191,17 +194,21 @@ export default function SmartBuyApp() {
             {sourceLinks.length > 0 && (
               <section className="sourceLauncher">
                 <div className="sourceLauncherHead">
-                  <div><h3>Перевірити цей запит прямо на ринку</h3><p>Ці кнопки відкривають реальний пошук на кожному майданчику. Автоматичне збирання цін будемо підключати окремими адаптерами.</p></div>
+                  <div><h3>Джерела цього пошуку</h3><p>SmartBuy пробує зібрати картки автоматично. Біля кожного джерела видно результат; кнопка завжди відкриває реальний пошук на самому майданчику.</p></div>
                   <span>{sourceLinks.length} джерел</span>
                 </div>
                 <div className="sourceLinks">
-                  {sourceLinks.map(source => (
-                    <a key={source.id} href={source.url} target="_blank" rel="noreferrer" className={`sourceChip ${source.kind}`}>
-                      <span>{source.kind === "private" ? <UserRound size={16}/> : source.kind === "international" ? <Globe2 size={16}/> : <Store size={16}/>}</span>
-                      <div><b>{source.name}</b><small>{source.label}</small></div>
-                      <ExternalLink size={14}/>
-                    </a>
-                  ))}
+                  {sourceLinks.map(source => {
+                    const status = sourceStatuses.find(item => item.id === source.id);
+                    const statusText = !status ? source.label : status.state === "ok" ? `${status.offerCount} знайдено` : status.state === "blocked" ? "серверний доступ заблоковано" : status.state === "timeout" ? "тайм-аут" : status.state === "empty" ? "відповів · без розпізнаних карток" : status.state === "error" ? "помилка відповіді" : source.label;
+                    return (
+                      <a key={source.id} href={source.url} target="_blank" rel="noreferrer" className={`sourceChip ${source.kind} ${status ? `status-${status.state}` : ""}`}>
+                        <span>{source.kind === "private" ? <UserRound size={16}/> : source.kind === "international" ? <Globe2 size={16}/> : <Store size={16}/>}</span>
+                        <div><b>{source.name}</b><small>{statusText}</small></div>
+                        <ExternalLink size={14}/>
+                      </a>
+                    );
+                  })}
                 </div>
               </section>
             )}
@@ -285,7 +292,7 @@ export default function SmartBuyApp() {
 
       {selected && <div className="modalBackdrop detailBackdrop" onMouseDown={() => setSelected(null)}><aside className="detailDrawer" onMouseDown={e => e.stopPropagation()}><button className="closeButton drawerClose" onClick={() => setSelected(null)}><X/></button><div className="detailVisual">{selected.imageUrl ? <img src={selected.imageUrl} alt={selected.title}/> : selected.image}</div><div className="score"><Sparkles size={14}/> Smart score {selected.score}/100</div><h2>{selected.title}</h2><p className="subtitle">{selected.subtitle}</p><div className="detailPrice">від {money.format(selected.bestPrice)}</div><div className="aiBox"><b><Sparkles size={14}/> Smart-висновок</b><p>{selected.aiSummary}</p></div><h3>Ключове</h3><div className="highlights">{selected.highlights.map(x => <span key={x}><Check size={13}/>{x}</span>)}</div><h3>Пропозиції з ринку</h3>{selected.offers.map((o, i) => <div className={`detailOffer ${o.sellerType}`} key={`${o.store}-${i}`}><div><b>{o.marketplace} · {conditionLabel(o.condition)}</b><small>{o.sellerType === "private" ? "Приватний продавець" : o.sellerName || o.store}</small>{o.city && <small><MapPin size={12}/> {o.city}</small>}{o.postedAt && <small><Clock3 size={12}/> {o.postedAt}</small>}</div><strong>{money.format(o.price)}</strong>{o.url && <a href={o.url} target="_blank" rel="noreferrer">Відкрити <ExternalLink size={14}/></a>}</div>)}</aside></div>}
 
-      <footer><div className="brand"><div className="logo">S</div><span>SmartBuy AI</span></div><p>v0.3 · Україна: магазини + OLX/приватні оголошення.</p></footer>
+      <footer><div className="brand"><div className="logo">S</div><span>SmartBuy AI</span></div><p>v0.4 LIVE · автоматичний best-effort пошук по ринку України.</p></footer>
     </main>
   );
 }
