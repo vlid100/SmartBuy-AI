@@ -26,6 +26,9 @@ export type Offer = {
   imageUrl?: string;
   externalId?: string;
   source?: string;
+  matchConfidence?: number;
+  matchConflicts?: string[];
+  priceAnomaly?: boolean;
 };
 
 export type PricePoint = { date: string; price: number; sourceCount?: number; offerCount?: number };

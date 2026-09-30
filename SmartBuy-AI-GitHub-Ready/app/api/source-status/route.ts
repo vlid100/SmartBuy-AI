@@ -5,7 +5,7 @@ import { automaticLiveSources } from "@/lib/live-market";
 export const dynamic = "force-dynamic";
 export async function GET() {
   return NextResponse.json({
-    version: "0.5.0",
+    version: "0.9.0",
     market: "Ukraine",
     architecture: "hybrid",
     automaticAggregation: "allowed-public-pages-best-effort",

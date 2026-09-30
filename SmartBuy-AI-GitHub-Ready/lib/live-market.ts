@@ -41,6 +41,11 @@ export const liveSources: LiveSource[] = [
     selectors: { card: '[data-qaid="product_block"], [data-testid*="product"], article', title: '[data-qaid="product_name"], [data-testid="product-name"], h2, h3', price: '[data-qaid="product_price"], [data-testid="product-price"], [class*="price"]', link: 'a[href]', image: 'img' }
   },
   {
+    id: "bigl", name: "Bigl.ua", sellerType: "store", trusted: true,
+    buildUrl: q => `https://bigl.ua/ua/search?search_term=${enc(q)}`,
+    selectors: { card: '[data-qaid="product_block"], [data-testid*="product"], article', title: '[data-qaid="product_name"], [data-testid="product-name"], h2, h3', price: '[data-qaid="product_price"], [data-testid="product-price"], [class*="price"]', link: 'a[href]', image: 'img' }
+  },
+  {
     id: "hotline", name: "Hotline", sellerType: "store", trusted: true,
     buildUrl: q => `https://hotline.ua/ua/sr/?q=${enc(q)}`,
     selectors: { card: '[class*="product"], [class*="list-item"], article', title: 'a[class*="title"], [class*="title"]', price: '[class*="price"]', link: 'a[href]', image: 'img' }
@@ -89,7 +94,7 @@ export const liveSources: LiveSource[] = [
 
 export const automaticLiveSources = liveSources.filter(source => liveSourceIds.has(source.id));
 
-const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 SmartBuyAI/0.8";
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 SmartBuyAI/0.9";
 const PRICE_RE = /(?:₴|грн\.?|uah)?\s*([0-9][0-9\s\u00a0.,]{1,14})\s*(?:₴|грн\.?|uah)?/i;
 const STOP = new Set(["купити","ціна","ціни","новий","нова","нове","бв","б/в","бу","україна","україні","доставка","товар","смартфон","ноутбук","телефон","оригінал"]);
 
@@ -251,12 +256,16 @@ function dedupeOffers(offers: Offer[], query: string, max = 10) {
   const out: Offer[] = []; const keys = new Set<string>();
   for (const offer of offers) {
     if (!offer.title || !usefulTitle(offer.title, query)) continue;
+    const match = evaluateTitleMatch(query, offer.title);
+    if (!match.reliable) continue;
     const key = `${offer.marketplace}|${offer.url || offer.title}|${offer.price}`;
     if (keys.has(key)) continue;
-    keys.add(key); out.push(offer);
-    if (out.length >= max) break;
+    keys.add(key);
+    out.push({ ...offer, matchConfidence: Math.round(match.score * 100), matchConflicts: match.conflicts });
   }
-  return out;
+  return out
+    .sort((a, b) => (b.matchConfidence || 0) - (a.matchConfidence || 0) || a.price - b.price)
+    .slice(0, max);
 }
 
 async function fetchWithTimeout(url: string, timeoutMs: number) {
@@ -330,57 +339,93 @@ function guessCategory(text: string) {
   return "Інше";
 }
 function median(values: number[]) { const v = [...values].sort((a,b)=>a-b); const m=Math.floor(v.length/2); return v.length%2?v[m]:Math.round((v[m-1]+v[m])/2); }
-function canonicalTitle(offers: Offer[]) {
-  const titles = offers.map(o => o.title || "").filter(Boolean).sort((a,b)=>a.length-b.length);
-  return titles[0] || "Товар";
+function canonicalTitle(offers: Offer[], query = "") {
+  const titles = offers.map(o => o.title || "").filter(Boolean);
+  if (!titles.length) return "Товар";
+  if (!query) return [...titles].sort((a,b)=>a.length-b.length)[0];
+  return [...titles].sort((a, b) => {
+    const am = evaluateTitleMatch(query, a);
+    const bm = evaluateTitleMatch(query, b);
+    return bm.score - am.score || a.length - b.length;
+  })[0];
 }
 function makeId(title: string) { return `${slug(title).slice(0,60) || "product"}-${Math.abs(hash(title)).toString(36)}`; }
 
 export function groupLiveOffers(offers: Offer[], query: string): Product[] {
   const groups: Offer[][] = [];
-  for (const offer of offers.sort((a,b)=>(a.title||"").localeCompare(b.title||""))) {
+  const ordered = [...offers].sort((a, b) => (b.matchConfidence || 0) - (a.matchConfidence || 0) || (a.title || "").localeCompare(b.title || ""));
+
+  for (const offer of ordered) {
     const title = offer.title || "";
     let bestIndex = -1, bestScore = 0;
-    for (let i=0;i<groups.length;i++) {
-      const match = groupSimilarity(title, canonicalTitle(groups[i]));
+    for (let i = 0; i < groups.length; i++) {
+      const match = groupSimilarity(title, canonicalTitle(groups[i], query));
       if (match.reliable && match.score > bestScore) { bestScore = match.score; bestIndex = i; }
     }
-    if (bestIndex >= 0 && bestScore >= 0.60) groups[bestIndex].push(offer); else groups.push([offer]);
+    if (bestIndex >= 0 && bestScore >= 0.70) groups[bestIndex].push(offer); else groups.push([offer]);
   }
+
   return groups.map(group => {
-    const sorted = [...group].sort((a,b)=>a.price-b.price);
-    const title = canonicalTitle(sorted);
-    const prices = sorted.map(o=>o.price);
-    const sources = new Set(sorted.map(o=>o.marketplace));
-    const newOffers = sorted.filter(o=>o.condition==="new");
-    const usedOffers = sorted.filter(o=>o.condition!=="new");
+    const byPrice = [...group].sort((a, b) => a.price - b.price);
+    const rawPrices = byPrice.map(o => o.price);
+    const rawMedian = median(rawPrices);
+    const canDetectOutlier = rawPrices.length >= 3 && rawMedian > 0;
+    const flagged = byPrice.map(offer => ({
+      ...offer,
+      priceAnomaly: canDetectOutlier && (offer.price < rawMedian * 0.55 || offer.price > rawMedian * 2.25),
+    }));
+    const sane = flagged.filter(o => !o.priceAnomaly).sort((a, b) => a.price - b.price);
+    const anomalies = flagged.filter(o => o.priceAnomaly).sort((a, b) => a.price - b.price);
+    const sorted = [...sane, ...anomalies];
+    const title = canonicalTitle(sane.length ? sane : flagged, query);
+    const prices = (sane.length ? sane : flagged).map(o => o.price);
+    const sources = new Set(sorted.map(o => o.marketplace));
+    const newOffers = sorted.filter(o => o.condition === "new" && !o.priceAnomaly);
+    const usedOffers = sorted.filter(o => o.condition !== "new" && !o.priceAnomaly);
     const bestNew = newOffers[0]?.price;
     const bestUsed = usedOffers[0]?.price;
     const med = median(prices);
     const category = guessCategory(`${query} ${title}`);
-    const saving = bestNew && bestUsed && bestUsed < bestNew ? Math.round((1-bestUsed/bestNew)*100) : 0;
+    const saving = bestNew && bestUsed && bestUsed < bestNew ? Math.round((1 - bestUsed / bestNew) * 100) : 0;
+    const match = evaluateTitleMatch(query, title);
+    const anomalyCount = anomalies.length;
+    const minPrice = Math.min(...prices);
+    const maxPrice = Math.max(...prices);
+    const spread = prices.length > 1 && med > 0 ? Math.round(((maxPrice - minPrice) / med) * 100) : 0;
+    const bestOffer = (sane.length ? sane : flagged)[0];
+    const bestSource = bestOffer?.marketplace || "джерело";
+    const averageConfidence = Math.round(sorted.reduce((sum, offer) => sum + (offer.matchConfidence || 0), 0) / Math.max(1, sorted.length));
+
     const highlights = [
       `${sorted.length} проп. · ${sources.size} джерел`,
-      newOffers.length && usedOffers.length ? "є нові та б/в" : newOffers.length ? "нові пропозиції" : "приватний ринок",
-      prices.length > 1 ? `діапазон ${Math.min(...prices).toLocaleString("uk-UA")}–${Math.max(...prices).toLocaleString("uk-UA")} ₴` : `${prices[0].toLocaleString("uk-UA")} ₴`,
+      `збіг моделі ${Math.max(averageConfidence, Math.round(match.score * 100))}%`,
+      prices.length > 1 ? `діапазон ${minPrice.toLocaleString("uk-UA")}–${maxPrice.toLocaleString("uk-UA")} ₴` : `${prices[0].toLocaleString("uk-UA")} ₴`,
     ];
-    const spread = prices.length > 1 && med > 0 ? Math.round(((Math.max(...prices) - Math.min(...prices)) / med) * 100) : 0;
-    const bestSource = sorted[0]?.marketplace || "джерело";
-    const summary = saving
-      ? `Найнижча знайдена ціна — ${prices[0].toLocaleString("uk-UA")} ₴ у ${bestSource}. Б/в стартує приблизно на ${saving}% дешевше за найнижчу нову пропозицію. Медіанна ціна — ${med.toLocaleString("uk-UA")} ₴${spread >= 20 ? `; розкид між пропозиціями великий (${spread}%), тому перевір комплектацію й стан.` : "."}`
-      : `Найнижча знайдена ціна — ${prices[0].toLocaleString("uk-UA")} ₴ у ${bestSource}. Медіанна ціна серед ${sorted.length} пропозицій — ${med.toLocaleString("uk-UA")} ₴${sources.size === 1 ? ". Поки є лише одне автоматичне джерело, тому висновок попередній." : spread >= 20 ? `; розкид цін ${spread}%, варто звірити комплектацію.` : "."}`;
+
+    let summary = saving
+      ? `Найнижча підтверджена ціна — ${bestOffer.price.toLocaleString("uk-UA")} ₴ у ${bestSource}. Б/в стартує приблизно на ${saving}% дешевше за найнижчу нову пропозицію. Медіанна ціна — ${med.toLocaleString("uk-UA")} ₴.`
+      : `Найнижча підтверджена ціна — ${bestOffer.price.toLocaleString("uk-UA")} ₴ у ${bestSource}. Медіанна ціна серед ${prices.length} релевантних пропозицій — ${med.toLocaleString("uk-UA")} ₴.`;
+    if (sources.size === 1) summary += " Поки є лише одне автоматичне джерело, тому висновок попередній.";
+    else if (spread >= 20) summary += ` Розкид цін ${spread}%, тому варто звірити комплектацію та умови продавця.`;
+    if (anomalyCount) summary += ` SmartBuy відсунув ${anomalyCount} підозріло дешев${anomalyCount === 1 ? "у/дорогу пропозицію" : "і/дорогі пропозиції"} з розрахунку найкращої ціни.`;
+
+    const cautions: string[] = [];
+    if (usedOffers.length) cautions.push("Для приватних оголошень перевіряй стан товару, продавця та умови безпечної оплати.");
+    if (anomalyCount) cautions.push(`${anomalyCount} цінов${anomalyCount === 1 ? "а аномалія" : "і аномалії"} не впливають на рекомендовану найнижчу ціну.`);
+
     return {
       id: makeId(title), title, category,
       subtitle: `${sources.size} джерел · ${sorted.length} пропозицій`,
       rating: 0, reviewCount: 0,
-      image: productEmoji(category), imageUrl: sorted.find(o=>o.imageUrl)?.imageUrl,
-      bestPrice: prices[0], score: Math.min(98, 72 + Math.min(sources.size,5)*4 + (newOffers.length&&usedOffers.length?5:0) + Math.min(sorted.filter(o=>o.trusted).length,3)*2),
+      image: productEmoji(category), imageUrl: sorted.find(o => o.imageUrl)?.imageUrl,
+      bestPrice: bestOffer.price,
+      score: Math.min(99, 70 + Math.min(sources.size, 5) * 4 + Math.round(match.score * 12) + Math.min(sorted.filter(o => o.trusted).length, 3) * 2),
       highlights,
-      caution: usedOffers.length ? "Для приватних оголошень перевіряй стан товару, продавця та умови безпечної оплати перед покупкою." : undefined,
+      caution: cautions.length ? cautions.join(" ") : undefined,
       aiSummary: summary,
       offers: sorted,
-      source: [...sources].slice(0,3).join(" · ") + (sources.size>3?` +${sources.size-3}`:""),
-      productUrl: sorted[0]?.url,
+      source: [...sources].slice(0, 3).join(" · ") + (sources.size > 3 ? ` +${sources.size - 3}` : ""),
+      productUrl: bestOffer?.url,
     } satisfies Product;
-  }).sort((a,b)=>b.offers.length-a.offers.length || a.bestPrice-b.bestPrice);
+  }).sort((a, b) => b.offers.length - a.offers.length || a.bestPrice - b.bestPrice);
 }

@@ -17,8 +17,12 @@ function offerMatchesFilter(offer: Offer, filter: MarketFilter) {
 
 function normalizeProduct(product: Product, offers: Offer[]): Product {
   const sorted = [...offers].sort((a, b) => a.price - b.price);
-  const sourceNames = [...new Set(sorted.map(o => o.marketplace))];
-  return { ...product, offers: sorted, bestPrice: sorted[0]?.price ?? product.bestPrice, source: sourceNames.slice(0, 3).join(" · ") + (sourceNames.length > 3 ? ` +${sourceNames.length - 3}` : ""), productUrl: sorted[0]?.url };
+  const sane = sorted.filter(offer => !offer.priceAnomaly);
+  const anomalies = sorted.filter(offer => offer.priceAnomaly);
+  const ordered = [...sane, ...anomalies];
+  const best = sane[0] || sorted[0];
+  const sourceNames = [...new Set(ordered.map(o => o.marketplace))];
+  return { ...product, offers: ordered, bestPrice: best?.price ?? product.bestPrice, source: sourceNames.slice(0, 3).join(" · ") + (sourceNames.length > 3 ? ` +${sourceNames.length - 3}` : ""), productUrl: best?.url || product.productUrl };
 }
 
 function scoreTextMatch(product: Product, query: string) {
