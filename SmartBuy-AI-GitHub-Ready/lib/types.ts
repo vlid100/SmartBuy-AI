@@ -28,7 +28,7 @@ export type Offer = {
   source?: string;
 };
 
-export type PricePoint = { date: string; price: number };
+export type PricePoint = { date: string; price: number; sourceCount?: number; offerCount?: number };
 
 export type ProductTracking = {
   lastCheckedAt: string;
@@ -36,6 +36,10 @@ export type ProductTracking = {
   message?: string;
   previousBestPrice?: number;
   lastSeenPrice?: number;
+  sourceNames?: string[];
+  offerCount?: number;
+  matchConfidence?: number;
+  matchedTitle?: string;
 };
 
 export type Product = {

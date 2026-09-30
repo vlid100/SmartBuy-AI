@@ -2,6 +2,7 @@ import type { Product, ProductTracking } from "@/lib/types";
 import { groupLiveOffers, searchUkraineLive } from "@/lib/live-market";
 import { getSupabaseAdmin } from "@/lib/supabase-server";
 import { snapshotProducts } from "@/lib/persistence";
+import { bestProductMatch } from "@/lib/matching";
 
 const DEFAULT_LIMIT = 12;
 const MAX_LIMIT = 24;
@@ -23,45 +24,8 @@ async function retry<T>(work: () => Promise<T>, attempts = 3): Promise<T> {
   throw lastError instanceof Error ? lastError : new Error("retry_failed");
 }
 
-function normalize(text: string) {
-  return text
-    .toLowerCase()
-    .replace(/[’'`]/g, "")
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .trim();
-}
-
-function tokens(text: string) {
-  const ignored = new Set(["купити", "ціна", "новий", "нова", "нове", "бв", "бу", "україна", "ua", "gb", "гб"]);
-  return normalize(text).split(/\s+/).filter(token => token.length > 1 && !ignored.has(token));
-}
-
-function similarity(a: string, b: string) {
-  const left = new Set(tokens(a));
-  const right = new Set(tokens(b));
-  if (!left.size || !right.size) return 0;
-  let common = 0;
-  for (const token of left) if (right.has(token)) common += 1;
-  const precision = common / Math.max(1, Math.min(left.size, right.size));
-  const jaccard = common / Math.max(1, new Set([...left, ...right]).size);
-  return precision * 0.7 + jaccard * 0.3;
-}
-
 function chooseMatch(stored: Product, candidates: Product[]) {
-  let best: Product | null = null;
-  let bestScore = 0;
-  for (const candidate of candidates) {
-    const score = similarity(stored.title, candidate.title);
-    if (score > bestScore) {
-      bestScore = score;
-      best = candidate;
-    }
-  }
-  if (!best) return null;
-  const bestTokens = new Set(tokens(best.title));
-  const storedTokens = tokens(stored.title);
-  const shared = storedTokens.filter(token => bestTokens.has(token)).length;
-  return bestScore >= 0.42 && shared >= Math.min(2, storedTokens.length) ? best : null;
+  return bestProductMatch(stored, candidates);
 }
 
 async function writeTrackingStatus(productKey: string, tracking: ProductTracking) {
@@ -96,7 +60,8 @@ async function refreshOne(stored: Product, previousBestPrice: number) {
   try {
     const live = await searchUkraineLive(stored.title);
     const candidates = groupLiveOffers(live.offers, stored.title);
-    const match = chooseMatch(stored, candidates);
+    const matched = chooseMatch(stored, candidates);
+    const match = matched?.product || null;
     const responsive = live.statuses.filter(status => status.state === "ok" || status.state === "empty").length;
     const failedSources = live.statuses.filter(status => status.state === "error" || status.state === "timeout" || status.state === "blocked");
 
@@ -112,6 +77,8 @@ async function refreshOne(stored: Product, previousBestPrice: number) {
           : `Автоматичні джерела цього разу не дали результату.${sourceDetail}`,
         previousBestPrice,
         lastSeenPrice: previousBestPrice,
+        sourceNames: [],
+        offerCount: 0,
       };
       await writeTrackingStatus(stored.id, tracking);
       return { productKey: stored.id, status: "not_found" as const, price: previousBestPrice, sourceErrors: failedSources.length };
@@ -129,6 +96,10 @@ async function refreshOne(stored: Product, previousBestPrice: number) {
         message: `Оновлено з ${new Set(match.offers.map(offer => offer.marketplace)).size} автоматичних джерел.`,
         previousBestPrice,
         lastSeenPrice: match.bestPrice,
+        sourceNames: Array.from(new Set(match.offers.map(offer => offer.marketplace))).slice(0, 6),
+        offerCount: match.offers.length,
+        matchConfidence: matched ? Math.round(matched.match.score * 100) : undefined,
+        matchedTitle: match.title,
       },
     };
     await snapshotProducts([refreshed]);

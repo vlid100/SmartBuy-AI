@@ -36,6 +36,10 @@ export async function snapshotProducts(products: Product[]) {
           message: "Оновлено під час пошуку SmartBuy.",
           previousBestPrice,
           lastSeenPrice: product.bestPrice,
+          sourceNames: Array.from(new Set(product.offers.map(o => o.marketplace))).slice(0, 6),
+          offerCount: product.offers.length,
+          matchConfidence: 1,
+          matchedTitle: product.title,
         },
       };
       await db.from("smartbuy_products").upsert({
@@ -80,14 +84,14 @@ export async function getPriceHistory(productKey: string, days = 90): Promise<{ 
   const since = new Date(Date.now() - days * 86400000).toISOString();
   const { data, error } = await db
     .from("smartbuy_price_history")
-    .select("best_price,captured_at")
+    .select("best_price,captured_at,source_count,offer_count")
     .eq("product_key", productKey)
     .gte("captured_at", since)
     .order("captured_at", { ascending: true });
   if (error) return { cloud: true, points: [] };
   return {
     cloud: true,
-    points: (data || []).map(row => ({ date: row.captured_at, price: Number(row.best_price) })),
+    points: (data || []).map(row => ({ date: row.captured_at, price: Number(row.best_price), sourceCount: Number(row.source_count || 0), offerCount: Number(row.offer_count || 0) })),
   };
 }
 

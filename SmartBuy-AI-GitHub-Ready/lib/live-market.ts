@@ -1,6 +1,7 @@
 import * as cheerio from "cheerio";
 import type { ListingCondition, Offer, Product, SourceSearchStatus } from "@/lib/types";
 import { liveSourceIds } from "@/lib/source-registry";
+import { evaluateTitleMatch } from "@/lib/matching";
 
 export type LiveSource = {
   id: string;
@@ -88,7 +89,7 @@ export const liveSources: LiveSource[] = [
 
 export const automaticLiveSources = liveSources.filter(source => liveSourceIds.has(source.id));
 
-const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 SmartBuyAI/0.6";
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 SmartBuyAI/0.8";
 const PRICE_RE = /(?:₴|грн\.?|uah)?\s*([0-9][0-9\s\u00a0.,]{1,14})\s*(?:₴|грн\.?|uah)?/i;
 const STOP = new Set(["купити","ціна","ціни","новий","нова","нове","бв","б/в","бу","україна","україні","доставка","товар","смартфон","ноутбук","телефон","оригінал"]);
 
@@ -134,7 +135,12 @@ function usefulTitle(title: string, query: string) {
   const t = cleanText(title);
   if (t.length < 3 || t.length > 220) return false;
   const q = cleanText(query);
-  return q.length < 3 || similarity(t, q) >= 0.18 || titleTokens(q).some(x => t.toLowerCase().includes(x));
+  if (q.length < 3) return true;
+  const match = evaluateTitleMatch(q, t);
+  const qTokens = titleTokens(q);
+  // For model-like queries (numbers/capacity/variants), require a reliable exact-family match.
+  if (qTokens.some(token => /\d/.test(token)) || /\b(pro|max|ultra|plus|mini|air|lite|fe|se)\b/i.test(q)) return match.reliable;
+  return match.reliable || similarity(t, q) >= 0.36;
 }
 
 function offerFrom(source: LiveSource, baseUrl: string, input: { title?: string; price?: unknown; url?: string; image?: unknown; meta?: string; externalId?: string }): Offer | null {
@@ -305,7 +311,7 @@ export async function searchUkraineLive(query: string) {
 }
 
 function normalizedTitle(title: string) { return titleTokens(title).slice(0, 12).join(" "); }
-function groupSimilarity(a: string, b: string) { return similarity(normalizedTitle(a), normalizedTitle(b)); }
+function groupSimilarity(a: string, b: string) { const ab = evaluateTitleMatch(normalizedTitle(a), normalizedTitle(b)); const ba = evaluateTitleMatch(normalizedTitle(b), normalizedTitle(a)); return { score: Math.min(ab.score, ba.score), reliable: ab.reliable && ba.reliable }; }
 function productEmoji(category: string) {
   if (category === "Смартфони") return "📱";
   if (category === "Ноутбуки") return "💻";
@@ -336,10 +342,10 @@ export function groupLiveOffers(offers: Offer[], query: string): Product[] {
     const title = offer.title || "";
     let bestIndex = -1, bestScore = 0;
     for (let i=0;i<groups.length;i++) {
-      const score = groupSimilarity(title, canonicalTitle(groups[i]));
-      if (score > bestScore) { bestScore = score; bestIndex = i; }
+      const match = groupSimilarity(title, canonicalTitle(groups[i]));
+      if (match.reliable && match.score > bestScore) { bestScore = match.score; bestIndex = i; }
     }
-    if (bestIndex >= 0 && bestScore >= 0.58) groups[bestIndex].push(offer); else groups.push([offer]);
+    if (bestIndex >= 0 && bestScore >= 0.60) groups[bestIndex].push(offer); else groups.push([offer]);
   }
   return groups.map(group => {
     const sorted = [...group].sort((a,b)=>a.price-b.price);
@@ -358,9 +364,11 @@ export function groupLiveOffers(offers: Offer[], query: string): Product[] {
       newOffers.length && usedOffers.length ? "є нові та б/в" : newOffers.length ? "нові пропозиції" : "приватний ринок",
       prices.length > 1 ? `діапазон ${Math.min(...prices).toLocaleString("uk-UA")}–${Math.max(...prices).toLocaleString("uk-UA")} ₴` : `${prices[0].toLocaleString("uk-UA")} ₴`,
     ];
+    const spread = prices.length > 1 && med > 0 ? Math.round(((Math.max(...prices) - Math.min(...prices)) / med) * 100) : 0;
+    const bestSource = sorted[0]?.marketplace || "джерело";
     const summary = saving
-      ? `Знайдено ${sorted.length} пропозицій. Б/в стартує приблизно на ${saving}% дешевше за найнижчу нову пропозицію. Медіанна ціна серед знайденого — ${med.toLocaleString("uk-UA")} ₴.`
-      : `Знайдено ${sorted.length} пропозицій у ${sources.size} джерелах. Найнижча ціна — ${prices[0].toLocaleString("uk-UA")} ₴, медіанна — ${med.toLocaleString("uk-UA")} ₴.`;
+      ? `Найнижча знайдена ціна — ${prices[0].toLocaleString("uk-UA")} ₴ у ${bestSource}. Б/в стартує приблизно на ${saving}% дешевше за найнижчу нову пропозицію. Медіанна ціна — ${med.toLocaleString("uk-UA")} ₴${spread >= 20 ? `; розкид між пропозиціями великий (${spread}%), тому перевір комплектацію й стан.` : "."}`
+      : `Найнижча знайдена ціна — ${prices[0].toLocaleString("uk-UA")} ₴ у ${bestSource}. Медіанна ціна серед ${sorted.length} пропозицій — ${med.toLocaleString("uk-UA")} ₴${sources.size === 1 ? ". Поки є лише одне автоматичне джерело, тому висновок попередній." : spread >= 20 ? `; розкид цін ${spread}%, варто звірити комплектацію.` : "."}`;
     return {
       id: makeId(title), title, category,
       subtitle: `${sources.size} джерел · ${sorted.length} пропозицій`,

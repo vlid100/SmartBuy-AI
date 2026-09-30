@@ -7,6 +7,7 @@ import {
   Sparkles, Star, Store, Target, TrendingDown, UserRound, X
 } from "lucide-react";
 import type { MarketFilter, Offer, PricePoint, Product, SearchApiResponse, SourceLink, SourceSearchStatus } from "@/lib/types";
+import { bestProductMatch } from "@/lib/matching";
 
 const categories = ["Усі", "Смартфони", "Ноутбуки", "Телевізори", "Для дому", "Інструменти"];
 const marketFilters: { id: MarketFilter; label: string; icon: "all" | "new" | "used" | "store" | "private" | "world" }[] = [
@@ -47,26 +48,45 @@ function makeSyncKey() {
   return Array.from(bytes, b => chars[b % chars.length]).join("");
 }
 
+function getPriceInsight(points: PricePoint[], currentPrice: number) {
+  if (points.length < 2) return { label: "Ще мало історії", detail: "SmartBuy накопичує дані. Після кількох перевірок оцінка стане точнішою.", tone: "neutral" };
+  const prices = points.map(point => point.price);
+  const min = Math.min(...prices);
+  const max = Math.max(...prices);
+  const average = prices.reduce((sum, value) => sum + value, 0) / prices.length;
+  const vsAverage = average ? Math.round(((currentPrice - average) / average) * 100) : 0;
+  if (currentPrice <= min * 1.02) return { label: "Дуже хороша ціна", detail: `Поточна ціна майже на історичному мінімумі. Від середньої вона ${Math.abs(vsAverage)}% ${vsAverage <= 0 ? "нижча" : "вища"}.`, tone: "good" };
+  if (currentPrice <= average * 0.95) return { label: "Хороша ціна", detail: `Зараз приблизно на ${Math.abs(vsAverage)}% нижче історичної середньої.`, tone: "good" };
+  if (currentPrice <= average * 1.05) return { label: "Нормальна ціна", detail: "Поточна ціна близька до звичайного рівня за накопиченою історією.", tone: "normal" };
+  if (currentPrice >= max * 0.98) return { label: "Ціна висока", detail: `Зараз приблизно на ${Math.abs(vsAverage)}% вище історичної середньої і близько до максимуму.`, tone: "high" };
+  return { label: "Вище середньої", detail: `Зараз приблизно на ${Math.abs(vsAverage)}% вище історичної середньої.`, tone: "high" };
+}
+
 function PriceHistoryChart({ points, currentPrice }: { points: PricePoint[]; currentPrice: number }) {
-  const safe = points.length ? points : [{ date: new Date().toISOString(), price: currentPrice }];
+  const safe: PricePoint[] = points.length ? points : [{ date: new Date().toISOString(), price: currentPrice }];
   const prices = safe.map(p => p.price);
   const min = Math.min(...prices), max = Math.max(...prices);
   const average = prices.reduce((sum, value) => sum + value, 0) / prices.length;
-  const signal = safe.length < 2 ? "Потрібно більше даних" : currentPrice <= min * 1.03 ? "Близько до мінімуму" : currentPrice <= average ? "Ціна виглядає нормально" : "Вище середньої історичної";
+  const insight = getPriceInsight(safe, currentPrice);
   const span = Math.max(1, max - min);
-  const coords = safe.map((p, i) => {
-    const x = safe.length === 1 ? 50 : 4 + (i / (safe.length - 1)) * 92;
-    const y = 88 - ((p.price - min) / span) * 72;
-    return `${x},${y}`;
-  }).join(" ");
+  const coords = safe.map((p, i) => ({
+    x: safe.length === 1 ? 50 : 4 + (i / (safe.length - 1)) * 92,
+    y: 88 - ((p.price - min) / span) * 72,
+  }));
+  const polyline = coords.map(point => `${point.x},${point.y}`).join(" ");
+  const recent = [...safe].slice(-5).reverse();
   return (
     <div className="priceHistoryCard">
-      <div className="historySignal"><TrendingDown size={14}/><b>{signal}</b></div>
-      <div className="historyStats"><div><span>Зараз</span><b>{money.format(currentPrice)}</b></div><div><span>Мінімум</span><b>{money.format(min)}</b></div><div><span>Середня</span><b>{money.format(average)}</b></div></div>
+      <div className={`historySignal ${insight.tone}`}><TrendingDown size={14}/><div><b>{insight.label}</b><span>{insight.detail}</span></div></div>
+      <div className="historyStats four"><div><span>Зараз</span><b>{money.format(currentPrice)}</b></div><div><span>Мінімум</span><b>{money.format(min)}</b></div><div><span>Середня</span><b>{money.format(average)}</b></div><div><span>Максимум</span><b>{money.format(max)}</b></div></div>
       <svg className="priceChart" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="Графік історії ціни">
-        <polyline points={coords} fill="none" stroke="currentColor" strokeWidth="3" vectorEffect="non-scaling-stroke"/>
+        <polyline points={polyline} fill="none" stroke="currentColor" strokeWidth="3" vectorEffect="non-scaling-stroke"/>
+        {coords.map((point, index) => <circle key={index} cx={point.x} cy={point.y} r="1.8" fill="currentColor" vectorEffect="non-scaling-stroke"/>)}
       </svg>
       <div className="historyAxis"><span>{safe.length > 1 ? new Date(safe[0].date).toLocaleDateString("uk-UA") : "перший запис"}</span><span>сьогодні</span></div>
+      <div className="historyRows">
+        {recent.map((point, index) => <div key={`${point.date}-${index}`}><span>{new Date(point.date).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span><b>{money.format(point.price)}</b><small>{point.offerCount ? `${point.offerCount} проп. · ` : ""}{point.sourceCount ? `${point.sourceCount} джер.` : ""}</small></div>)}
+      </div>
     </div>
   );
 }
@@ -311,32 +331,6 @@ export default function SmartBuyApp() {
     await saveWatchToCloud(product, targetPrices[product.id]);
   }
 
-  function trackingTokens(value: string) {
-    const ignored = new Set(["купити", "ціна", "ціни", "новий", "нова", "нове", "бв", "бу", "україна", "ua", "gb", "гб"]);
-    return value.toLowerCase().replace(/[’'`]/g, "").replace(/[^a-zа-яіїєґ0-9+.-]+/gi, " ").split(/\s+/).filter(token => token.length > 1 && !ignored.has(token));
-  }
-
-  function trackingSimilarity(left: string, right: string) {
-    const a = new Set(trackingTokens(left));
-    const b = new Set(trackingTokens(right));
-    if (!a.size || !b.size) return 0;
-    let common = 0;
-    for (const token of a) if (b.has(token)) common += 1;
-    const precision = common / Math.max(1, Math.min(a.size, b.size));
-    const union = new Set([...a, ...b]).size;
-    return precision * 0.75 + (common / Math.max(1, union)) * 0.25;
-  }
-
-  function bestTrackingMatch(stored: Product, candidates: Product[]) {
-    let best: Product | null = null;
-    let bestScore = 0;
-    for (const candidate of candidates) {
-      const score = trackingSimilarity(stored.title, candidate.title);
-      if (score > bestScore) { bestScore = score; best = candidate; }
-    }
-    return bestScore >= 0.42 ? best : null;
-  }
-
   async function refreshTrackedNow() {
     if (!syncKey || !cloudEnabled || trackingRefresh) return;
     const tracked: Product[] = Object.values(watching);
@@ -360,7 +354,8 @@ export default function SmartBuyApp() {
           const data: SearchApiResponse = await response.json().catch(() => ({ results: [] } as unknown as SearchApiResponse));
           if (!response.ok) throw new Error(`search_http_${response.status}`);
 
-          const match = bestTrackingMatch(product, Array.isArray(data.results) ? data.results : []);
+          const matched = bestProductMatch(product, Array.isArray(data.results) ? data.results : []);
+          const match = matched?.product || null;
           checked += 1;
           if (!match) {
             notFound += 1;
@@ -369,9 +364,11 @@ export default function SmartBuyApp() {
               tracking: {
                 lastCheckedAt: checkedAt,
                 status: "not_found",
-                message: "Пошук відповів, але точну модель цього разу не вдалося впевнено зіставити.",
+                message: "SmartBuy відкинув схожі результати, бо не зміг підтвердити точну модель/модифікацію.",
                 previousBestPrice: product.bestPrice,
                 lastSeenPrice: product.bestPrice,
+                sourceNames: [],
+                offerCount: 0,
               },
             };
             refreshedLocal[product.id] = updatedProduct;
@@ -392,9 +389,13 @@ export default function SmartBuyApp() {
               tracking: {
                 lastCheckedAt: checkedAt,
                 status: "ok",
-                message: `Перевірено через SmartBuy Search: ${match.offers.length} пропозицій.`,
+                message: `Перевірено ${match.offers.length} пропозицій.`,
                 previousBestPrice: product.bestPrice,
                 lastSeenPrice: match.bestPrice,
+                sourceNames: Array.from(new Set(match.offers.map(offer => offer.marketplace))).slice(0, 6),
+                offerCount: match.offers.length,
+                matchConfidence: matched ? Math.round(matched.match.score * 100) : undefined,
+                matchedTitle: match.title,
               },
             };
             refreshedLocal[product.id] = updatedProduct;
@@ -478,7 +479,7 @@ export default function SmartBuyApp() {
         {tab === "search" && (
           <>
             <div className="sourceStatus marketStatus">
-              <div><BadgeCheck size={18}/><b>Ринок України v0.7.2</b><span>{provider}</span></div>
+              <div><BadgeCheck size={18}/><b>Ринок України v0.8</b><span>{provider}</span></div>
               <p><Info size={15}/> Автоматично збираємо дані лише там, де це стабільно працює. Інші майданчики відкриваємо прямим пошуком — без вигаданих цін і без обходу захисту.</p>
             </div>
 
@@ -566,6 +567,7 @@ export default function SmartBuyApp() {
               const saving = newPrice && usedPrice && usedPrice < newPrice ? Math.round((1 - usedPrice / newPrice) * 100) : null;
               const previousTrackedPrice = Number(product.tracking?.previousBestPrice || 0);
               const trackedDelta = previousTrackedPrice > 0 ? product.bestPrice - previousTrackedPrice : 0;
+              const bestOffer = product.offers[0];
               return (
                 <article className="card" key={product.id}>
                   <div className="cardTop">
@@ -586,7 +588,7 @@ export default function SmartBuyApp() {
                   </div>
                   {saving !== null && <div className="savingNote">Б/в дешевше нового приблизно на <b>{saving}%</b></div>}
 
-                  <div className="priceRow"><strong>від {money.format(product.bestPrice)}</strong></div>
+                  <div className="priceRow priceWithSource"><strong>від {money.format(product.bestPrice)}</strong>{bestOffer?.marketplace && <span><Store size={12}/>{bestOffer.marketplace}</span>}</div>
                   <p className="stores">{product.offers.length} пропозицій · {product.source || "SmartBuy"}</p>
                   <div className="highlights">{product.highlights.slice(0,3).map(x => <span key={x}><Check size={13}/>{x}</span>)}</div>
                   {product.caution && <div className="caution">⚠ {product.caution}</div>}
@@ -612,6 +614,8 @@ export default function SmartBuyApp() {
                     <div className={`trackingStatus ${product.tracking.status}`}>
                       <div><Clock3 size={14}/><span>{product.tracking.lastCheckedAt ? `Остання перевірка: ${new Date(product.tracking.lastCheckedAt).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}` : "Ще не перевірялось"}</span></div>
                       <b>{product.tracking.status === "ok" ? trackedDelta < 0 ? `Ціна впала на ${money.format(Math.abs(trackedDelta))}` : trackedDelta > 0 ? `Ціна зросла на ${money.format(trackedDelta)}` : "Ціна без змін" : product.tracking.status === "not_found" ? "Товар тимчасово не знайдено" : "Помилка перевірки"}</b>
+                      {product.tracking.sourceNames && product.tracking.sourceNames.length > 0 && <div className="trackingSources"><span>Джерело ціни:</span>{product.tracking.sourceNames.map(source => <b key={source}>{source}</b>)}</div>}
+                      {product.tracking.matchConfidence && <div className="matchConfidence">Точність збігу: <b>{product.tracking.matchConfidence}%</b>{product.tracking.offerCount ? ` · ${product.tracking.offerCount} проп.` : ""}</div>}
                       {product.tracking.message && <small>{product.tracking.message}</small>}
                     </div>
                   )}
@@ -641,7 +645,7 @@ export default function SmartBuyApp() {
 
       {selected && <div className="modalBackdrop detailBackdrop" onMouseDown={() => setSelected(null)}><aside className="detailDrawer" onMouseDown={e => e.stopPropagation()}><button className="closeButton drawerClose" onClick={() => setSelected(null)}><X/></button><div className="detailVisual">{selected.imageUrl ? <img src={selected.imageUrl} alt={selected.title}/> : selected.image}</div><div className="score"><Sparkles size={14}/> Smart score {selected.score}/100</div><h2>{selected.title}</h2><p className="subtitle">{selected.subtitle}</p><div className="detailPrice">від {money.format(selected.bestPrice)}</div><div className="drawerTrackRow"><button className={`trackButton ${watching[selected.id] ? "saved" : ""}`} onClick={() => void toggleWatch(selected)}><Heart size={16} fill={watching[selected.id] ? "currentColor" : "none"}/>{watching[selected.id] ? "Відстежується" : "Відстежувати"}</button><div className="drawerTarget"><Target size={14}/><input inputMode="numeric" value={targetPrices[selected.id] || ""} onChange={e => updateTarget(selected, e.target.value)} placeholder="цільова ціна"/><span>₴</span><button onClick={() => void commitTarget(selected)}>OK</button></div></div><h3><TrendingDown size={16}/> Історія ціни</h3><PriceHistoryChart points={history.length ? history : (selected.priceHistory || [])} currentPrice={selected.bestPrice}/><p className="historyHint">{historyCloud ? "Дані з Supabase. Історія оновлюється під час пошуку, ручної перевірки та автоматичної щоденної перевірки." : "Підключи Supabase, щоб SmartBuy накопичував реальну історію ціни між пошуками."}</p><div className="aiBox"><b><Sparkles size={14}/> Smart-висновок</b><p>{selected.aiSummary}</p></div><h3>Ключове</h3><div className="highlights">{selected.highlights.map(x => <span key={x}><Check size={13}/>{x}</span>)}</div><h3>Пропозиції з ринку</h3>{selected.offers.map((o, i) => <div className={`detailOffer ${o.sellerType}`} key={`${o.store}-${i}`}><div><b>{o.marketplace} · {conditionLabel(o.condition)}</b><small>{o.sellerType === "private" ? "Приватний продавець" : o.sellerName || o.store}</small>{o.city && <small><MapPin size={12}/> {o.city}</small>}{o.postedAt && <small><Clock3 size={12}/> {o.postedAt}</small>}</div><strong>{money.format(o.price)}</strong>{o.url && <a href={o.url} target="_blank" rel="noreferrer">Відкрити <ExternalLink size={14}/></a>}</div>)}</aside></div>}
 
-      <footer><div className="brand"><div className="logo">S</div><span>SmartBuy AI</span></div><p>v0.7 · автоматичне відстеження · історія цін · цільова ціна.</p></footer>
+      <footer><div className="brand"><div className="logo">S</div><span>SmartBuy AI</span></div><p>v0.8 · точніше зіставлення · джерела ціни · розумна історія цін.</p></footer>
     </main>
   );
 }
