@@ -2,6 +2,7 @@ import type { SavedSearch } from "@/lib/types";
 import { getSupabaseAdmin } from "@/lib/supabase-server";
 import { hashSyncKey } from "@/lib/persistence";
 import { searchProducts, type ConditionFilter, type MarketScope } from "@/lib/search";
+import { createNotificationForHash } from "@/lib/notifications";
 
 const MAX_CRON_CHECKS = 4;
 
@@ -142,6 +143,19 @@ async function checkOneRow(row: any) {
     };
     const { data: updated, error } = await db.from("smartbuy_saved_searches").update(patch).eq("id", row.id).select("*").maybeSingle();
     if (error) throw new Error(error.message);
+    if (drop > 0 && best != null) {
+      await createNotificationForHash({
+        syncKeyHash: String(row.sync_key_hash),
+        dedupeKey: `saved:${row.id}:price:${Math.round(best)}`,
+        kind: "deal_alert",
+        title: `Ціна впала на ${Math.round(drop).toLocaleString("uk-UA")} ₴`,
+        body: `${String(row.query || row.category || "Збережений пошук")}: найкраща ціна зараз ${Math.round(best).toLocaleString("uk-UA")} ₴.`,
+        entityType: "saved_search",
+        entityId: String(row.id),
+        price: best,
+        previousPrice: previous ?? undefined,
+      });
+    }
     return { ok: true, item: fromRow(updated || { ...row, ...patch }), deal: drop > 0 };
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown_error";

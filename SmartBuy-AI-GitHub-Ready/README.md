@@ -1,3 +1,19 @@
+# SmartBuy AI v1.5 — Notifications Center
+
+SmartBuy AI compares Ukrainian stores, private listings and international search links, with cloud watchlists, saved searches, price history and notifications.
+
+## v1.5
+- Cloud notification center in Supabase
+- Price-drop, target-price and saved-search deal alerts
+- Unread badge on the bell
+- Optional browser notifications while SmartBuy is open
+- Daily Vercel Cron can create alerts even if the page is not open; they appear next time the site is opened
+
+## Upgrade from v1.4
+1. Replace project files and deploy.
+2. In Supabase SQL Editor run `supabase/v1.5_notifications.sql` once.
+3. No new Vercel environment variables are required.
+
 # SmartBuy AI v1.4 — Cloud Saved Searches + Automatic Deal Alerts
 
 SmartBuy v1.4 moves Saved Searches from one browser into the same Supabase cloud already used by the watchlist. The same sync code can now carry products, target prices, price history **and saved searches** between devices.

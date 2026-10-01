@@ -6,7 +6,7 @@ import {
   Globe2, Heart, Info, MapPin, Play, RefreshCw, Search, ShieldCheck, ShoppingBag, SlidersHorizontal,
   Sparkles, Star, Store, Target, Trash2, TrendingDown, UserRound, X, Zap
 } from "lucide-react";
-import type { Offer, PricePoint, Product, SavedSearch, SearchApiResponse, SourceLink, SourceSearchStatus } from "@/lib/types";
+import type { Offer, PricePoint, Product, SavedSearch, SearchApiResponse, SmartNotification, SourceLink, SourceSearchStatus } from "@/lib/types";
 import { bestProductMatch } from "@/lib/matching";
 
 const categories = [
@@ -33,7 +33,7 @@ const conditionTabs: { id: ConditionFilter; label: string }[] = [
 const quickSearches = ["iPhone 17 256GB", "Lenovo LOQ 15", "Makita DHP486", "Roborock Q8 Max+"];
 const money = new Intl.NumberFormat("uk-UA", { style: "currency", currency: "UAH", maximumFractionDigits: 0 });
 
-type Tab = "search" | "compare" | "watch" | "saved";
+type Tab = "search" | "compare" | "watch" | "saved" | "notifications";
 
 
 function bestResultPrice(results: Product[]) {
@@ -238,6 +238,10 @@ export default function SmartBuyApp() {
   const [savedMessage, setSavedMessage] = useState("");
   const [savedCloudReady, setSavedCloudReady] = useState<boolean | null>(null);
   const [savedCloudMessage, setSavedCloudMessage] = useState("");
+  const [notifications, setNotifications] = useState<SmartNotification[]>([]);
+  const [notificationCloudReady, setNotificationCloudReady] = useState<boolean | null>(null);
+  const [notificationMessage, setNotificationMessage] = useState("");
+  const [browserPermission, setBrowserPermission] = useState<NotificationPermission | "unsupported">("unsupported");
 
   const selectedOffers = useMemo(() => {
     if (!selected) return [] as Offer[];
@@ -289,10 +293,24 @@ export default function SmartBuyApp() {
       localStorage.setItem("smartbuy-sync-key-v1", key);
       setSyncKey(key);
     } catch {}
+    if (typeof window !== "undefined" && "Notification" in window) setBrowserPermission(Notification.permission);
     if (key) void initializeCloud(key);
     void runSearch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (browserPermission !== "granted" || notifications.length === 0 || typeof window === "undefined" || !("Notification" in window)) return;
+    let shown: string[] = [];
+    try { shown = JSON.parse(localStorage.getItem("smartbuy-browser-notified-v1") || "[]"); } catch {}
+    const seen = new Set(shown);
+    const fresh = notifications.filter(item => !item.readAt && !seen.has(item.id)).slice(0, 3);
+    for (const item of fresh) {
+      try { new Notification(item.title, { body: item.body, tag: item.id }); } catch {}
+      seen.add(item.id);
+    }
+    try { localStorage.setItem("smartbuy-browser-notified-v1", JSON.stringify(Array.from(seen).slice(-100))); } catch {}
+  }, [notifications, browserPermission]);
 
   useEffect(() => {
     setOfferViewFilter("all");
@@ -510,6 +528,7 @@ export default function SmartBuyApp() {
         const data = await response.json();
         if (response.ok && data.tableReady === true) {
           await loadCloudSavedSearches(syncKey, false);
+          await loadNotifications(syncKey);
           setSavedMessage(data.deals ? `Знайдено ${data.deals} пошук(и) з нижчою ціною.` : "Перевірено в хмарі. Нових знижень поки немає.");
           return;
         }
@@ -537,6 +556,7 @@ export default function SmartBuyApp() {
         if (response.ok && Array.isArray(data.items) && data.items[0]) {
           const updated = data.items[0] as SavedSearch;
           persistSavedSearches(savedSearches.map(search => search.id === item.id ? updated : search));
+          await loadNotifications(syncKey);
           setSavedMessage((updated.dealDrop || 0) > 0 ? `Ціна нижча на ${money.format(updated.dealDrop || 0)}.` : "Перевірено в хмарі. Нової нижчої ціни немає.");
           return;
         }
@@ -545,6 +565,10 @@ export default function SmartBuyApp() {
     const updated = await checkSavedSearchLocal(item);
     persistSavedSearches(savedSearches.map(search => search.id === item.id ? updated : search));
     void syncSavedSearchToCloud(updated, syncKey, false);
+    if ((updated.dealDrop || 0) > 0 && updated.lastBestPrice) {
+      await createManualNotification({ dedupeKey: `saved:${updated.id}:price:${Math.round(updated.lastBestPrice)}`, kind: "deal_alert", title: `Ціна впала на ${money.format(updated.dealDrop || 0)}`, body: `${updated.query || updated.category}: зараз від ${money.format(updated.lastBestPrice)}.`, entityType: "saved_search", entityId: updated.id, price: updated.lastBestPrice, previousPrice: updated.previousBestPrice });
+      await loadNotifications(syncKey);
+    }
     setSavedMessage((updated.dealDrop || 0) > 0 ? `Ціна нижча на ${money.format(updated.dealDrop || 0)}.` : "Перевірено. Нової нижчої ціни немає.");
   }
 
@@ -588,6 +612,69 @@ export default function SmartBuyApp() {
     throw lastError instanceof Error ? lastError : new Error("network_error");
   }
 
+  async function loadNotifications(key = syncKey) {
+    if (!key) return;
+    try {
+      const response = await fetchWithRetry(`/api/notifications?token=${encodeURIComponent(key)}`, undefined, 3);
+      const data = await response.json();
+      if (data.cloud && data.tableReady === true) {
+        setNotificationCloudReady(true);
+        setNotificationMessage("Сповіщення зберігаються в Supabase і синхронізуються між пристроями.");
+        setNotifications(Array.isArray(data.items) ? data.items : []);
+      } else if (data.cloud && data.tableReady === false) {
+        setNotificationCloudReady(false);
+        setNotificationMessage("Запусти supabase/v1.5_notifications.sql — після цього центр сповіщень стане хмарним.");
+      } else {
+        setNotificationCloudReady(false);
+        setNotificationMessage("Центр сповіщень потребує підключеного Supabase.");
+      }
+    } catch {
+      setNotificationMessage("Не вдалося оновити центр сповіщень. Спробуй ще раз трохи пізніше.");
+    }
+  }
+
+  async function requestBrowserNotifications() {
+    if (typeof window === "undefined" || !("Notification" in window)) { setBrowserPermission("unsupported"); return; }
+    try {
+      const permission = await Notification.requestPermission();
+      setBrowserPermission(permission);
+    } catch {
+      setBrowserPermission(Notification.permission);
+    }
+  }
+
+  async function markAllNotificationsRead() {
+    if (!syncKey || notifications.every(item => item.readAt)) return;
+    try {
+      await fetchWithRetry("/api/notifications", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: syncKey, all: true }) }, 2);
+      const now = new Date().toISOString();
+      setNotifications(current => current.map(item => item.readAt ? item : { ...item, readAt: now }));
+    } catch {}
+  }
+
+  async function markNotificationRead(id: string) {
+    const current = notifications.find(item => item.id === id);
+    if (!current || current.readAt || !syncKey) return;
+    try {
+      await fetchWithRetry("/api/notifications", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: syncKey, id }) }, 2);
+      const now = new Date().toISOString();
+      setNotifications(items => items.map(item => item.id === id ? { ...item, readAt: now } : item));
+    } catch {}
+  }
+
+  async function removeNotification(id: string) {
+    setNotifications(items => items.filter(item => item.id !== id));
+    if (!syncKey) return;
+    try { await fetchWithRetry("/api/notifications", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: syncKey, id }) }, 2); } catch {}
+  }
+
+  async function createManualNotification(event: { dedupeKey: string; kind: "price_drop" | "target_hit" | "deal_alert" | "info"; title: string; body: string; entityType?: "product" | "saved_search"; entityId?: string; price?: number; previousPrice?: number }) {
+    if (!syncKey || notificationCloudReady === false) return;
+    try {
+      await fetchWithRetry("/api/notifications", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: syncKey, event }) }, 2);
+    } catch {}
+  }
+
   async function initializeCloud(key: string) {
     try {
       const response = await fetchWithRetry("/api/cloud/status", undefined, 3);
@@ -608,6 +695,7 @@ export default function SmartBuyApp() {
       setCloudDetail(status?.keySource === "secret" ? "Supabase підключено через серверний Secret key." : "Supabase підключено через серверний service role key.");
       await loadCloudWatchlist(key, true);
       await loadCloudSavedSearches(key, true);
+      await loadNotifications(key);
     } catch {
       // A temporary request failure must not silently reclassify an already-configured project as local.
       setCloudDetail("Не вдалося перевірити статус хмари. Онови сторінку — SmartBuy повторить спробу.");
@@ -775,6 +863,14 @@ export default function SmartBuyApp() {
               },
             };
             refreshedLocal[product.id] = updatedProduct;
+            if (match.bestPrice < product.bestPrice) {
+              const drop = product.bestPrice - match.bestPrice;
+              await createManualNotification({ dedupeKey: `product:${product.id}:price:${Math.round(match.bestPrice)}`, kind: "price_drop", title: `Ціна впала на ${money.format(drop)}`, body: `${product.title}: зараз від ${money.format(match.bestPrice)}.`, entityType: "product", entityId: product.id, price: match.bestPrice, previousPrice: product.bestPrice });
+            }
+            const target = targetPrices[product.id];
+            if (target && match.bestPrice <= target && product.bestPrice > target) {
+              await createManualNotification({ dedupeKey: `product:${product.id}:target:${Math.round(target)}`, kind: "target_hit", title: "Цільова ціна досягнута", body: `${product.title}: ${money.format(match.bestPrice)} при цілі ${money.format(target)}.`, entityType: "product", entityId: product.id, price: match.bestPrice, previousPrice: product.bestPrice });
+            }
             const saveResponse = await fetch("/api/watchlist", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -798,6 +894,7 @@ export default function SmartBuyApp() {
       if (failures.length) parts.push(`деталі: ${failures[0].slice(0, 80)}`);
       setTrackingMessage(parts.join(" · "));
       if (!errors) await loadCloudWatchlist(syncKey);
+      await loadNotifications(syncKey);
     } finally {
       setTrackingRefresh(false);
     }
@@ -811,6 +908,7 @@ export default function SmartBuyApp() {
     setSyncInput("");
     await loadCloudWatchlist(clean);
     await loadCloudSavedSearches(clean, true);
+    await loadNotifications(clean);
   }
 
   async function copySyncCode() {
@@ -819,7 +917,8 @@ export default function SmartBuyApp() {
 
   const watchProducts = useMemo(() => Object.values(watching), [watching]);
   const savedDealCount = useMemo(() => savedSearches.filter(item => (item.dealDrop || 0) > 0).length, [savedSearches]);
-  const visibleProducts = tab === "watch" ? watchProducts : tab === "saved" ? [] : products;
+  const unreadNotificationCount = useMemo(() => notifications.filter(item => !item.readAt).length, [notifications]);
+  const visibleProducts = tab === "watch" ? watchProducts : (tab === "saved" || tab === "notifications") ? [] : products;
   const ukraineSourceLinks = useMemo(() => sourceLinks.filter(source => source.region === "ukraine" && source.kind !== "private"), [sourceLinks]);
   const internationalSourceLinks = useMemo(() => sourceLinks.filter(source => source.region === "international"), [sourceLinks]);
   const privateSourceLinks = useMemo(() => sourceLinks.filter(source => source.kind === "private"), [sourceLinks]);
@@ -836,13 +935,13 @@ export default function SmartBuyApp() {
           <button className={tab === "watch" ? "activeNav" : ""} onClick={() => setTab("watch")}>Відстеження</button>
           <button className={tab === "saved" ? "activeNav" : ""} onClick={() => setTab("saved")}>Збережені{savedDealCount > 0 ? ` · ${savedDealCount}` : ""}</button>
         </nav>
-        <button className="iconButton" aria-label="Відстеження" onClick={() => setTab("watch")}>
-          <Bell size={18}/>{watchProducts.length > 0 && <span className="badge">{watchProducts.length}</span>}
+        <button className={`iconButton ${tab === "notifications" ? "activeBell" : ""}`} aria-label="Сповіщення" onClick={() => { setTab("notifications"); void loadNotifications(); }}>
+          <Bell size={18}/>{unreadNotificationCount > 0 && <span className="badge">{unreadNotificationCount > 9 ? "9+" : unreadNotificationCount}</span>}
         </button>
       </header>
 
       <section className="hero" id="search">
-        <div className="eyebrow"><Sparkles size={15}/> SmartBuy AI v1.4 · Cloud Saved Searches + Deal Alerts</div>
+        <div className="eyebrow"><Sparkles size={15}/> SmartBuy AI v1.5 · Notifications Center</div>
         <h1>Знайди потрібну річ.<br/><span>Порівняй увесь ринок.</span></h1>
         <p>Українські магазини, приватні оголошення та закордонні майданчики в одному місці. SmartBuy показує автоматично підтверджені ціни окремо від прямих пошуків, щоб не вигадувати дані.</p>
 
@@ -861,7 +960,7 @@ export default function SmartBuyApp() {
         {tab === "search" && (
           <>
             <div className="sourceStatus marketStatus">
-              <div><BadgeCheck size={18}/><b>SmartBuy AI v1.4</b><span>{provider}</span></div>
+              <div><BadgeCheck size={18}/><b>SmartBuy AI v1.5</b><span>{provider}</span></div>
               <p><Info size={15}/> Зелені ціни — автоматично підтверджені джерела. OLX, Shafa, AliExpress, Temu, Amazon та недоступні для сервера магазини відкриваються точним прямим пошуком.</p>
             </div>
 
@@ -1001,7 +1100,37 @@ export default function SmartBuyApp() {
           </section>
         )}
 
-        {tab !== "saved" && <>
+        {tab === "notifications" && (
+          <section className="notificationPanel">
+            <div className="notificationHead">
+              <div><div className="savedEyebrow"><Bell size={15}/> Центр сповіщень</div><h2>Сповіщення</h2><p>Падіння ціни, досягнення цільової ціни та нові Deal Alerts зберігаються в хмарі.</p></div>
+              <div className="notificationHeadActions">
+                {browserPermission !== "granted" && browserPermission !== "unsupported" && <button className="browserNotifyButton" onClick={() => void requestBrowserNotifications()}><Bell size={14}/> Увімкнути браузерні</button>}
+                <button onClick={() => void markAllNotificationsRead()} disabled={unreadNotificationCount === 0}><Check size={14}/> Прочитати всі</button>
+                <button onClick={() => void loadNotifications()}><RefreshCw size={14}/> Оновити</button>
+              </div>
+            </div>
+            <div className={`savedCloudState ${notificationCloudReady === true ? "on" : notificationCloudReady === false ? "off" : "checking"}`}>
+              {notificationCloudReady === true ? <Cloud size={16}/> : <CloudOff size={16}/>}
+              <div><b>{notificationCloudReady === true ? "Сповіщення у хмарі" : notificationCloudReady === false ? "Потрібна таблиця Notifications" : "Перевіряю центр сповіщень"}</b><span>{notificationMessage || "SmartBuy перевіряє Supabase."}</span></div>
+            </div>
+            {browserPermission === "granted" && <div className="browserNotifyState"><BadgeCheck size={14}/><span>Браузерні сповіщення дозволені. Нові непрочитані події можуть з’являтися системним повідомленням, коли сайт відкритий.</span></div>}
+            {browserPermission === "denied" && <div className="browserNotifyState denied"><Info size={14}/><span>Браузерні сповіщення заблоковані в налаштуваннях браузера. Центр SmartBuy все одно працює.</span></div>}
+            {notifications.length === 0 ? <div className="savedEmpty"><Bell size={28}/><h3>Поки немає сповіщень</h3><p>Коли ціна впаде або буде досягнута ціль — подія з’явиться тут.</p></div> : <div className="notificationList">
+              {notifications.map(item => <article className={`notificationCard ${item.readAt ? "read" : "unread"} ${item.kind}`} key={item.id}>
+                <div className="notificationIcon">{item.kind === "target_hit" ? <Target size={18}/> : item.kind === "deal_alert" ? <Zap size={18}/> : item.kind === "price_drop" ? <TrendingDown size={18}/> : <Info size={18}/>}</div>
+                <div className="notificationContent"><div className="notificationTitleRow"><h3>{item.title}</h3>{!item.readAt && <span>Нове</span>}</div><p>{item.body}</p><small>{new Date(item.createdAt).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</small></div>
+                <div className="notificationActions">
+                  {!item.readAt && <button onClick={() => void markNotificationRead(item.id)} title="Позначити прочитаним"><Check size={14}/></button>}
+                  {item.entityType && <button onClick={() => { void markNotificationRead(item.id); if (item.entityType === "saved_search") setTab("saved"); else { setTab("watch"); const product = item.entityId ? watching[item.entityId] : undefined; if (product) setSelected(product); } }} title="Відкрити"><ExternalLink size={14}/></button>}
+                  <button className="notificationDelete" onClick={() => void removeNotification(item.id)} title="Видалити"><Trash2 size={14}/></button>
+                </div>
+              </article>)}
+            </div>}
+          </section>
+        )}
+
+        {tab !== "saved" && tab !== "notifications" && <>
         <div className="resultsHeader">
           <div>
             <h2>{tab === "watch" ? "Відстеження" : searched ? "Знайдені варіанти" : "Приклад об'єднаного ринку"}</h2>

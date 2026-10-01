@@ -127,3 +127,20 @@ export type SavedSearch = {
   lastCheckStatus?: "never" | "ok" | "no_live_data" | "error";
   lastError?: string;
 };
+
+
+export type SmartNotificationKind = "price_drop" | "target_hit" | "deal_alert" | "info";
+
+export type SmartNotification = {
+  id: string;
+  kind: SmartNotificationKind;
+  title: string;
+  body: string;
+  entityType?: "product" | "saved_search";
+  entityId?: string;
+  price?: number;
+  previousPrice?: number;
+  url?: string;
+  readAt?: string;
+  createdAt: string;
+};

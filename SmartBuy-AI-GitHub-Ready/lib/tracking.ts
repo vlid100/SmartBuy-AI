@@ -3,6 +3,7 @@ import { groupLiveOffers, searchUkraineLive } from "@/lib/live-market";
 import { getSupabaseAdmin } from "@/lib/supabase-server";
 import { snapshotProducts } from "@/lib/persistence";
 import { bestProductMatch } from "@/lib/matching";
+import { createNotificationForHash } from "@/lib/notifications";
 
 const DEFAULT_LIMIT = 12;
 const MAX_LIMIT = 24;
@@ -162,6 +163,54 @@ export async function refreshTrackedProducts(options?: { productKeys?: string[];
     const results: Awaited<ReturnType<typeof refreshOne>>[] = [];
     for (const item of sorted) {
       results.push(await refreshOne(item.product, item.previousBestPrice));
+    }
+
+    // Create durable notifications for every sync profile watching a product.
+    const okResults = results.filter(result => result.status === "ok" && "previousPrice" in result) as Array<{ productKey: string; status: "ok"; price: number; previousPrice: number }>;
+    if (okResults.length) {
+      const okKeys = okResults.map(result => result.productKey);
+      type WatcherRow = { sync_key_hash: string; product_key: string; target_price_uah: number | null };
+      const { data: watcherRowsRaw } = await db
+        .from("smartbuy_watchlist")
+        .select("sync_key_hash,product_key,target_price_uah")
+        .in("product_key", okKeys);
+      const watcherRows = (watcherRowsRaw || []) as WatcherRow[];
+      const titleByKey = new Map(rows.map(row => [row.product_key, (row.product_data as Product)?.title || row.product_key]));
+      for (const result of okResults) {
+        const watchers = (watcherRows || []).filter(row => String(row.product_key) === result.productKey);
+        const title = titleByKey.get(result.productKey) || "Відстежуваний товар";
+        for (const watcher of watchers) {
+          const syncHash = String(watcher.sync_key_hash || "");
+          const target = watcher.target_price_uah == null ? null : Number(watcher.target_price_uah);
+          if (result.price < result.previousPrice) {
+            const drop = result.previousPrice - result.price;
+            await createNotificationForHash({
+              syncKeyHash: syncHash,
+              dedupeKey: `product:${result.productKey}:price:${Math.round(result.price)}`,
+              kind: "price_drop",
+              title: `Ціна впала на ${Math.round(drop).toLocaleString("uk-UA")} ₴`,
+              body: `${title}: зараз від ${Math.round(result.price).toLocaleString("uk-UA")} ₴.`,
+              entityType: "product",
+              entityId: result.productKey,
+              price: result.price,
+              previousPrice: result.previousPrice,
+            });
+          }
+          if (target && result.price <= target && result.previousPrice > target) {
+            await createNotificationForHash({
+              syncKeyHash: syncHash,
+              dedupeKey: `product:${result.productKey}:target:${Math.round(target)}`,
+              kind: "target_hit",
+              title: "Цільова ціна досягнута",
+              body: `${title}: ${Math.round(result.price).toLocaleString("uk-UA")} ₴ при цілі ${Math.round(target).toLocaleString("uk-UA")} ₴.`,
+              entityType: "product",
+              entityId: result.productKey,
+              price: result.price,
+              previousPrice: result.previousPrice,
+            });
+          }
+        }
+      }
     }
 
     return {
