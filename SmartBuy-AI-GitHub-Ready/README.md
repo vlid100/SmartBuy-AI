@@ -1,4 +1,11 @@
 # SmartBuy AI v4.0 — Fair Price Intelligence
+## v4.0.1 build fix
+
+- Fixed strict TypeScript null/undefined checks in the Diagnostics live-source section.
+- `diagnostics.sourceStatuses` is now normalized to an empty array before rendering.
+- Bumped runtime/API diagnostic version and Service Worker cache to 4.0.1.
+- No Supabase SQL changes are required.
+
 
 SmartBuy is a Next.js/Vercel shopping assistant focused on the Ukrainian market, private listings and assisted international comparison.
 

@@ -3,7 +3,7 @@ import { getSupabaseAdmin, getSupabaseServerConfig } from "@/lib/supabase-server
 import { sourceCapabilitySummary, sourceCounts } from "@/lib/source-registry";
 import { searchSource, stableLiveSources } from "@/lib/live-market";
 
-const VERSION = "4.0.0";
+const VERSION = "4.0.1";
 
 const requiredTables = [
   ["smartbuy_products", "product_key"],

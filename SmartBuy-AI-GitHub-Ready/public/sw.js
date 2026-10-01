@@ -1,4 +1,4 @@
-const CACHE = "smartbuy-v4.0-shell";
+const CACHE = "smartbuy-v4.0.1-shell";
 const SHELL = ["/", "/offline", "/manifest.webmanifest", "/icons/icon-192.png", "/icons/icon-512.png"];
 
 self.addEventListener("install", event => {

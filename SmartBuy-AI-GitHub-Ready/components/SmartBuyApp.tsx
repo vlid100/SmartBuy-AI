@@ -1963,6 +1963,7 @@ export default function SmartBuyApp() {
   const ukraineSourceLinks = useMemo(() => sourceLinks.filter(source => source.region === "ukraine" && source.kind !== "private"), [sourceLinks]);
   const internationalSourceLinks = useMemo(() => sourceLinks.filter(source => source.region === "international"), [sourceLinks]);
   const privateSourceLinks = useMemo(() => sourceLinks.filter(source => source.kind === "private"), [sourceLinks]);
+  const diagnosticSourceStatuses = diagnostics?.sourceStatuses ?? [];
   const sourceReliability = useMemo(() => {
     const attempted = sourceStatuses.filter(item => item.state !== "not-run");
     const ok = attempted.filter(item => item.state === "ok");
@@ -2336,7 +2337,7 @@ export default function SmartBuyApp() {
             </div>
 
             <div className="diagnosticSummaryGrid">
-              <div><Server size={17}/><span>Версія</span><b>{diagnostics?.version || "4.0.0"}</b><small>{diagnostics?.environment || "—"}</small></div>
+              <div><Server size={17}/><span>Версія</span><b>{diagnostics?.version || "4.0.1"}</b><small>{diagnostics?.environment || "—"}</small></div>
               <div><Database size={17}/><span>Supabase</span><b>{diagnostics?.cloudConfigured ? "Підключено" : diagnostics ? "Не налаштовано" : "—"}</b><small>ключі не показуються</small></div>
               <div><Wifi size={17}/><span>Інтернет</span><b>{clientRuntime ? (clientRuntime.online ? "Online" : "Offline") : "—"}</b><small>{clientRuntime?.serviceWorker === "active" ? "Service Worker активний" : clientRuntime?.serviceWorker === "supported" ? "Service Worker підтримується" : "Service Worker недоступний"}</small></div>
               <div><Bell size={17}/><span>Браузерні сповіщення</span><b>{clientRuntime?.notification === "granted" ? "Дозволені" : clientRuntime?.notification === "denied" ? "Заблоковані" : clientRuntime?.notification === "default" ? "Не запитані" : "Недоступні"}</b><small>{clientRuntime?.installed ? "PWA встановлена" : "веб-режим"}</small></div>
@@ -2353,10 +2354,10 @@ export default function SmartBuyApp() {
               </div>}
             </div>
 
-            {diagnostics?.sourceStatuses?.length > 0 && <div className="diagnosticSection">
+            {diagnosticSourceStatuses.length > 0 && <div className="diagnosticSection">
               <div className="diagnosticSectionHead"><div><h3>Стабільні live-джерела</h3><p>Глибока перевірка робить один тестовий пошук. Captcha та антибот SmartBuy не обходить.</p></div></div>
               <div className="diagnosticSourceGrid">
-                {diagnostics.sourceStatuses.map(source => <article className={`diagnosticSource ${source.state}`} key={source.id}>
+                {diagnosticSourceStatuses.map(source => <article className={`diagnosticSource ${source.state}`} key={source.id}>
                   <div><b>{source.name}</b><span>{source.tier === "stable" ? "stable" : "probe"}</span></div>
                   <strong>{source.state === "ok" ? `${source.offerCount} проп.` : source.state}</strong>
                   <small>{source.cached ? "кеш · " : ""}{source.durationMs} мс{source.attempts ? ` · ${source.attempts} спроб.` : ""}</small>

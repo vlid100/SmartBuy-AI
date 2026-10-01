@@ -35,8 +35,8 @@ if (missing.length) {
 }
 
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-if (pkg.version !== '4.0.0') {
-  console.error(`SmartBuy smoke-check: package version must be 4.0.0, got ${pkg.version}`);
+if (pkg.version !== '4.0.1') {
+  console.error(`SmartBuy smoke-check: package version must be 4.0.1, got ${pkg.version}`);
   process.exit(1);
 }
 

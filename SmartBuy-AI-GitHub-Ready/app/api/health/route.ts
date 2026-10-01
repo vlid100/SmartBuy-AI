@@ -4,7 +4,7 @@ export async function GET() {
   return NextResponse.json({
     ok: true,
     service: "SmartBuy AI",
-    version: "4.0.0",
+    version: "4.0.1",
     liveMarket: "source connectors + capability matrix + adaptive routing + conservative query expansion + deduplication",
     pwa: true,
     checkedAt: new Date().toISOString(),
