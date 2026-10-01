@@ -2,26 +2,53 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
-  BadgeCheck, Bell, Check, ChevronDown, Clock3, Cloud, CloudOff, Copy, ExternalLink, GitCompareArrows,
-  Globe2, Heart, Info, MapPin, RefreshCw, Search, ShieldCheck, ShoppingBag, SlidersHorizontal,
-  Sparkles, Star, Store, Target, TrendingDown, UserRound, X
+  BadgeCheck, Bell, Bookmark, Check, ChevronDown, Clock3, Cloud, CloudOff, Copy, ExternalLink, GitCompareArrows,
+  Globe2, Heart, Info, MapPin, Play, RefreshCw, Search, ShieldCheck, ShoppingBag, SlidersHorizontal,
+  Sparkles, Star, Store, Target, Trash2, TrendingDown, UserRound, X, Zap
 } from "lucide-react";
-import type { MarketFilter, Offer, PricePoint, Product, SearchApiResponse, SourceLink, SourceSearchStatus } from "@/lib/types";
+import type { Offer, PricePoint, Product, SavedSearch, SearchApiResponse, SourceLink, SourceSearchStatus } from "@/lib/types";
 import { bestProductMatch } from "@/lib/matching";
 
-const categories = ["Усі", "Смартфони", "Ноутбуки", "Телевізори", "Для дому", "Інструменти"];
-const marketFilters: { id: MarketFilter; label: string; icon: "all" | "new" | "used" | "store" | "private" | "world" }[] = [
-  { id: "all", label: "Усі", icon: "all" },
-  { id: "new", label: "Нові", icon: "new" },
-  { id: "used", label: "Б/в", icon: "used" },
-  { id: "stores", label: "Магазини", icon: "store" },
-  { id: "private", label: "Приватні", icon: "private" },
+const categories = [
+  { value: "Усі", label: "Всі категорії" },
+  { value: "Смартфони", label: "Смартфони" },
+  { value: "Ноутбуки", label: "Ноутбуки" },
+  { value: "Телевізори", label: "Телевізори" },
+  { value: "Для дому", label: "Для дому" },
+  { value: "Інструменти", label: "Інструменти" },
+];
+type MarketScope = "all" | "ukraine" | "private" | "international";
+type ConditionFilter = "all" | "new" | "used";
+const marketScopeTabs: { id: MarketScope; label: string; icon: "all" | "store" | "private" | "world" }[] = [
+  { id: "all", label: "Весь ринок", icon: "all" },
+  { id: "ukraine", label: "Україна", icon: "store" },
+  { id: "private", label: "Від людей", icon: "private" },
   { id: "international", label: "Закордон", icon: "world" },
+];
+const conditionTabs: { id: ConditionFilter; label: string }[] = [
+  { id: "all", label: "Усі товари" },
+  { id: "new", label: "Нові" },
+  { id: "used", label: "Б/в" },
 ];
 const quickSearches = ["iPhone 17 256GB", "Lenovo LOQ 15", "Makita DHP486", "Roborock Q8 Max+"];
 const money = new Intl.NumberFormat("uk-UA", { style: "currency", currency: "UAH", maximumFractionDigits: 0 });
 
-type Tab = "search" | "compare" | "watch";
+type Tab = "search" | "compare" | "watch" | "saved";
+
+
+function bestResultPrice(results: Product[]) {
+  const prices = results.map(product => Number(product.bestPrice)).filter(price => Number.isFinite(price) && price > 0);
+  return prices.length ? Math.min(...prices) : null;
+}
+
+function savedSearchLabel(item: SavedSearch) {
+  const parts = [item.marketScope === "all" ? "Весь ринок" : item.marketScope === "ukraine" ? "Україна" : item.marketScope === "private" ? "Від людей" : "Закордон"];
+  if (item.conditionFilter === "new") parts.push("нові");
+  if (item.conditionFilter === "used") parts.push("б/в");
+  if (item.category !== "Усі") parts.push(item.category);
+  if (item.maxPrice) parts.push(`до ${Number(item.maxPrice).toLocaleString("uk-UA")} ₴`);
+  return parts.join(" · ");
+}
 
 function bestByCondition(offers: Offer[], condition: "new" | "used") {
   const matches = offers.filter(o => !o.priceAnomaly && (condition === "new" ? o.condition === "new" : o.condition !== "new"));
@@ -32,6 +59,78 @@ function conditionLabel(condition: Offer["condition"]) {
   if (condition === "new") return "Нове";
   if (condition === "refurbished") return "Відновлене";
   return "Б/в";
+}
+
+type OfferViewFilter = "all" | "new" | "used" | "store" | "private";
+type OfferSort = "value" | "recommended" | "price" | "confidence";
+
+function validOffers(offers: Offer[]) {
+  const sane = offers.filter(offer => !offer.priceAnomaly && Number.isFinite(offer.price) && offer.price > 0);
+  return sane.length ? sane : offers.filter(offer => Number.isFinite(offer.price) && offer.price > 0);
+}
+
+function medianOfferPrice(offers: Offer[]) {
+  const prices = validOffers(offers).map(offer => offer.price).sort((a, b) => a - b);
+  if (!prices.length) return null;
+  const middle = Math.floor(prices.length / 2);
+  return prices.length % 2 ? prices[middle] : (prices[middle - 1] + prices[middle]) / 2;
+}
+
+function bestBySellerType(offers: Offer[], sellerType: Offer["sellerType"]) {
+  const matching = validOffers(offers).filter(offer => offer.sellerType === sellerType);
+  return matching.length ? [...matching].sort((a, b) => a.price - b.price)[0] : null;
+}
+
+function marketMetrics(offers: Offer[]) {
+  const sane = validOffers(offers);
+  const median = medianOfferPrice(offers);
+  const best = sane.length ? [...sane].sort((a, b) => a.price - b.price)[0] : null;
+  const sources = new Set(sane.map(offer => offer.marketplace)).size;
+  const savingVsMedian = best && median && median > best.price ? median - best.price : 0;
+  return { best, median, sources, savingVsMedian };
+}
+
+
+function offerRiskFlags(offer: Offer, median: number | null) {
+  const flags: string[] = [];
+  if (offer.priceAnomaly) flags.push("цінова аномалія");
+  if ((offer.matchConfidence || 0) > 0 && (offer.matchConfidence || 0) < 90) flags.push("перевір модель");
+  if (!offer.verifiedSeller && !offer.trusted) flags.push("неперевірений продавець");
+  if (median && offer.price < median * 0.72) flags.push("дуже низька ціна");
+  if (offer.sellerType === "private" && !offer.warranty) flags.push("без гарантії");
+  return flags;
+}
+
+function offerValueScore(offer: Offer, median: number | null) {
+  let score = 62;
+  const confidence = offer.matchConfidence || 0;
+  if (confidence >= 98) score += 16;
+  else if (confidence >= 95) score += 13;
+  else if (confidence >= 90) score += 9;
+  else if (confidence > 0) score -= 10;
+
+  if (offer.verifiedSeller) score += 8;
+  else if (offer.trusted) score += 5;
+
+  if (median && median > 0) {
+    const ratio = offer.price / median;
+    if (ratio >= 0.84 && ratio <= 0.97) score += 12;
+    else if (ratio > 0.97 && ratio <= 1.04) score += 7;
+    else if (ratio < 0.72) score -= 20;
+    else if (ratio > 1.18) score -= 10;
+  }
+
+  if (offer.delivery) score += 2;
+  if (offer.warranty) score += 3;
+  if (offer.priceAnomaly) score -= 35;
+  return Math.max(1, Math.min(100, Math.round(score)));
+}
+
+function valueScoreLabel(score: number) {
+  if (score >= 90) return "дуже вигідно";
+  if (score >= 80) return "вигідно";
+  if (score >= 68) return "нормально";
+  return "перевірити";
 }
 
 function marketJumpLinks(title: string) {
@@ -45,11 +144,11 @@ function marketJumpLinks(title: string) {
   ] as const;
 }
 
-function filterIcon(id: MarketFilter) {
-  if (id === "stores") return <Store size={15}/>;
-  if (id === "private") return <UserRound size={15}/>;
-  if (id === "international") return <Globe2 size={15}/>;
-  return null;
+function scopeIcon(id: MarketScope) {
+  if (id === "ukraine") return <Store size={16}/>;
+  if (id === "private") return <UserRound size={16}/>;
+  if (id === "international") return <Globe2 size={16}/>;
+  return <ShoppingBag size={16}/>;
 }
 
 function makeSyncKey() {
@@ -105,7 +204,8 @@ function PriceHistoryChart({ points, currentPrice }: { points: PricePoint[]; cur
 export default function SmartBuyApp() {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("Усі");
-  const [marketFilter, setMarketFilter] = useState<MarketFilter>("all");
+  const [marketScope, setMarketScope] = useState<MarketScope>("all");
+  const [conditionFilter, setConditionFilter] = useState<ConditionFilter>("all");
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [searched, setSearched] = useState(false);
@@ -131,6 +231,50 @@ export default function SmartBuyApp() {
   const [historyCloud, setHistoryCloud] = useState(false);
   const [trackingRefresh, setTrackingRefresh] = useState(false);
   const [trackingMessage, setTrackingMessage] = useState("");
+  const [offerViewFilter, setOfferViewFilter] = useState<OfferViewFilter>("all");
+  const [offerSort, setOfferSort] = useState<OfferSort>("value");
+  const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
+  const [savedCheckLoading, setSavedCheckLoading] = useState(false);
+  const [savedMessage, setSavedMessage] = useState("");
+  const [savedCloudReady, setSavedCloudReady] = useState<boolean | null>(null);
+  const [savedCloudMessage, setSavedCloudMessage] = useState("");
+
+  const selectedOffers = useMemo(() => {
+    if (!selected) return [] as Offer[];
+    let items = selected.offers.filter(offer => {
+      if (offerViewFilter === "new") return offer.condition === "new";
+      if (offerViewFilter === "used") return offer.condition !== "new";
+      if (offerViewFilter === "store") return offer.sellerType === "store";
+      if (offerViewFilter === "private") return offer.sellerType === "private";
+      return true;
+    });
+    const median = medianOfferPrice(selected.offers);
+    items = [...items].sort((a, b) => {
+      if (offerSort === "value") return offerValueScore(b, median) - offerValueScore(a, median) || a.price - b.price;
+      if (offerSort === "price") return Number(a.priceAnomaly) - Number(b.priceAnomaly) || a.price - b.price;
+      if (offerSort === "confidence") return Number(a.priceAnomaly) - Number(b.priceAnomaly) || (b.matchConfidence || 0) - (a.matchConfidence || 0) || a.price - b.price;
+      return Number(a.priceAnomaly) - Number(b.priceAnomaly)
+        || Number(Boolean(b.verifiedSeller)) - Number(Boolean(a.verifiedSeller))
+        || Number(Boolean(b.trusted)) - Number(Boolean(a.trusted))
+        || (b.matchConfidence || 0) - (a.matchConfidence || 0)
+        || a.price - b.price;
+    });
+    return items;
+  }, [selected, offerViewFilter, offerSort]);
+
+  const selectedMetrics = useMemo(() => selected ? marketMetrics(selected.offers) : null, [selected]);
+  const selectedBestValue = useMemo(() => {
+    if (!selected) return null;
+    const median = medianOfferPrice(selected.offers);
+    const candidates = validOffers(selected.offers).filter(offer => !offer.priceAnomaly);
+    if (!candidates.length) return null;
+    return [...candidates].sort((a, b) => offerValueScore(b, median) - offerValueScore(a, median) || a.price - b.price)[0];
+  }, [selected]);
+  const selectedRiskCount = useMemo(() => {
+    if (!selected) return 0;
+    const median = medianOfferPrice(selected.offers);
+    return selected.offers.filter(offer => offerRiskFlags(offer, median).length > 0).length;
+  }, [selected]);
 
   useEffect(() => {
     let key = "";
@@ -139,6 +283,8 @@ export default function SmartBuyApp() {
       if (saved) setWatching(JSON.parse(saved));
       const savedTargets = localStorage.getItem("smartbuy-targets-v1");
       if (savedTargets) setTargetPrices(JSON.parse(savedTargets));
+      const savedQueries = localStorage.getItem("smartbuy-saved-searches-v1");
+      if (savedQueries) setSavedSearches(JSON.parse(savedQueries));
       key = localStorage.getItem("smartbuy-sync-key-v1") || makeSyncKey();
       localStorage.setItem("smartbuy-sync-key-v1", key);
       setSyncKey(key);
@@ -147,6 +293,11 @@ export default function SmartBuyApp() {
     void runSearch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    setOfferViewFilter("all");
+    setOfferSort("value");
+  }, [selected?.id]);
 
   useEffect(() => {
     if (!selected) { setHistory([]); return; }
@@ -166,15 +317,16 @@ export default function SmartBuyApp() {
     return () => { cancelled = true; };
   }, [selected]);
 
-  async function runSearch(nextQuery = query, nextCategory = category, nextMarket = marketFilter) {
+  async function runSearch(nextQuery = query, nextCategory = category, nextScope = marketScope, nextCondition = conditionFilter, nextMaxPrice = maxPrice) {
     setLoading(true);
     setTab("search");
     try {
       const params = new URLSearchParams();
       if (nextQuery.trim()) params.set("q", nextQuery.trim());
       if (nextCategory !== "Усі") params.set("category", nextCategory);
-      if (maxPrice) params.set("maxPrice", maxPrice);
-      params.set("market", nextMarket);
+      if (nextMaxPrice) params.set("maxPrice", nextMaxPrice);
+      params.set("scope", nextScope);
+      params.set("condition", nextCondition);
       const response = await fetch(`/api/search?${params.toString()}`, { cache: "no-store" });
       const data: SearchApiResponse = await response.json();
       setProducts(data.results || []);
@@ -183,7 +335,7 @@ export default function SmartBuyApp() {
       setSourceLinks(data.sourceLinks || []);
       setSourceStatuses(data.sourceStatuses || []);
       setCoverage(data.coverage || { totalOffers: 0, storeOffers: 0, privateOffers: 0, newOffers: 0, usedOffers: 0, sourceCount: 0 });
-      setSearched(Boolean(nextQuery.trim() || nextCategory !== "Усі" || maxPrice || nextMarket !== "all"));
+      setSearched(Boolean(nextQuery.trim() || nextCategory !== "Усі" || nextMaxPrice || nextScope !== "all" || nextCondition !== "all"));
     } catch {
       setProducts([]);
       setSourceLinks([]);
@@ -196,12 +348,221 @@ export default function SmartBuyApp() {
 
   function selectCategory(value: string) {
     setCategory(value);
-    void runSearch(query, value, marketFilter);
+    void runSearch(query, value, marketScope, conditionFilter);
   }
 
-  function selectMarket(value: MarketFilter) {
-    setMarketFilter(value);
-    void runSearch(query, category, value);
+  function selectMarketScope(value: MarketScope) {
+    setMarketScope(value);
+    void runSearch(query, category, value, conditionFilter);
+  }
+
+  function selectCondition(value: ConditionFilter) {
+    setConditionFilter(value);
+    void runSearch(query, category, marketScope, value);
+  }
+
+  function persistSavedSearches(next: SavedSearch[]) {
+    setSavedSearches(next);
+    try { localStorage.setItem("smartbuy-saved-searches-v1", JSON.stringify(next)); } catch {}
+  }
+
+  async function loadCloudSavedSearches(key = syncKey, mergeLocal = true) {
+    if (!key) return;
+    try {
+      const response = await fetchWithRetry(`/api/saved-searches?token=${encodeURIComponent(key)}`, undefined, 3);
+      const data = await response.json();
+      if (data.cloud && data.tableReady === true) {
+        setSavedCloudReady(true);
+        setSavedCloudMessage("Збережені пошуки синхронізуються через Supabase і перевіряються автоматично раз на день.");
+        const cloudItems = Array.isArray(data.items) ? data.items as SavedSearch[] : [];
+        if (mergeLocal) {
+          let localItems: SavedSearch[] = [];
+          try { localItems = JSON.parse(localStorage.getItem("smartbuy-saved-searches-v1") || "[]"); } catch {}
+          const byFingerprint = new Map<string, SavedSearch>();
+          for (const item of cloudItems) byFingerprint.set(`${item.query.toLowerCase()}|${item.category}|${item.marketScope}|${item.conditionFilter}|${item.maxPrice}`, item);
+          for (const item of localItems) {
+            const fp = `${item.query.toLowerCase()}|${item.category}|${item.marketScope}|${item.conditionFilter}|${item.maxPrice}`;
+            if (!byFingerprint.has(fp)) {
+              byFingerprint.set(fp, item);
+              void syncSavedSearchToCloud(item, key, false);
+            }
+          }
+          persistSavedSearches(Array.from(byFingerprint.values()).sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()));
+        } else {
+          persistSavedSearches(cloudItems);
+        }
+      } else if (data.cloud && data.tableReady === false) {
+        setSavedCloudReady(false);
+        setSavedCloudMessage("Для хмарних Saved Searches треба один раз запустити SQL-файл supabase/v1.4_saved_searches.sql. Поки що вони працюють локально.");
+      } else {
+        setSavedCloudReady(false);
+        setSavedCloudMessage("Saved Searches зараз працюють локально.");
+      }
+    } catch {
+      setSavedCloudMessage("Не вдалося оновити хмарні Saved Searches. Локальна копія не втрачена.");
+    }
+  }
+
+  async function syncSavedSearchToCloud(item: SavedSearch, key = syncKey, announce = true) {
+    if (!key) return false;
+    try {
+      const response = await fetchWithRetry("/api/saved-searches", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: key, search: item }),
+      }, 3);
+      const data = await response.json();
+      if (data.cloud && data.tableReady === true) {
+        setSavedCloudReady(true);
+        if (data.item?.id) {
+          setSavedSearches(current => current.map(search => search.id === item.id ? data.item : search));
+        }
+        if (announce) setSavedCloudMessage("Збережено в Supabase. Пошук буде доступний на інших пристроях з тим самим кодом синхронізації.");
+        return true;
+      }
+      if (data.cloud && data.tableReady === false) {
+        setSavedCloudReady(false);
+        setSavedCloudMessage("Запусти supabase/v1.4_saved_searches.sql — після цього Saved Searches стануть хмарними.");
+      }
+    } catch {
+      if (announce) setSavedCloudMessage("Хмарне збереження тимчасово не відповіло. Пошук залишився локально.");
+    }
+    return false;
+  }
+
+  async function saveCurrentSearch() {
+    const cleanQuery = query.trim();
+    if (!cleanQuery && category === "Усі" && marketScope === "all" && conditionFilter === "all" && !maxPrice) {
+      setSavedMessage("Спочатку введи запит або вибери фільтр.");
+      return;
+    }
+    const fingerprint = `${cleanQuery.toLowerCase()}|${category}|${marketScope}|${conditionFilter}|${maxPrice}`;
+    const existing = savedSearches.find(item => `${item.query.toLowerCase()}|${item.category}|${item.marketScope}|${item.conditionFilter}|${item.maxPrice}` === fingerprint);
+    const currentBest = bestResultPrice(products);
+    if (existing) {
+      const updated: SavedSearch = { ...existing, enabled: true, lastBestPrice: currentBest ?? existing.lastBestPrice, updatedAt: new Date().toISOString() };
+      persistSavedSearches(savedSearches.map(item => item.id === existing.id ? updated : item));
+      void syncSavedSearchToCloud(updated);
+      setSavedMessage("Цей пошук уже збережено.");
+      return;
+    }
+    const id = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const item: SavedSearch = {
+      id,
+      query: cleanQuery,
+      category,
+      marketScope,
+      conditionFilter,
+      maxPrice,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      lastBestPrice: currentBest ?? undefined,
+      resultCount: products.length,
+      offerCount: coverage.totalOffers,
+      enabled: true,
+      lastCheckStatus: "never",
+    };
+    persistSavedSearches([item, ...savedSearches]);
+    void syncSavedSearchToCloud(item);
+    setSavedMessage("Пошук збережено. Поточна найкраща ціна стала базовою.");
+  }
+
+  async function openSavedSearch(item: SavedSearch) {
+    setQuery(item.query);
+    setCategory(item.category);
+    setMarketScope(item.marketScope);
+    setConditionFilter(item.conditionFilter);
+    setMaxPrice(item.maxPrice);
+    await runSearch(item.query, item.category, item.marketScope, item.conditionFilter, item.maxPrice);
+  }
+
+  async function checkSavedSearchLocal(item: SavedSearch) {
+    try {
+      const params = new URLSearchParams();
+      if (item.query.trim()) params.set("q", item.query.trim());
+      if (item.category !== "Усі") params.set("category", item.category);
+      if (item.maxPrice) params.set("maxPrice", item.maxPrice);
+      params.set("scope", item.marketScope);
+      params.set("condition", item.conditionFilter);
+      const response = await fetch(`/api/search?${params.toString()}`, { cache: "no-store" });
+      if (!response.ok) throw new Error(`http_${response.status}`);
+      const data: SearchApiResponse = await response.json();
+      const best = bestResultPrice(data.results || []);
+      const previous = item.lastBestPrice;
+      const drop = best && previous && best < previous ? previous - best : 0;
+      return { ...item, previousBestPrice: previous, lastBestPrice: best ?? previous, lastCheckedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), resultCount: data.results?.length || 0, offerCount: data.coverage?.totalOffers || 0, dealDrop: drop || 0, lastCheckStatus: best ? "ok" : "no_live_data" } as SavedSearch;
+    } catch (error) {
+      return { ...item, lastCheckedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), lastCheckStatus: "error", lastError: error instanceof Error ? error.message : "network_error" } as SavedSearch;
+    }
+  }
+
+  async function checkAllSavedSearches() {
+    if (savedCheckLoading || savedSearches.length === 0) return;
+    setSavedCheckLoading(true);
+    setSavedMessage("Перевіряю збережені пошуки…");
+    try {
+      if (savedCloudReady === true && syncKey) {
+        const response = await fetchWithRetry("/api/saved-searches/check", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: syncKey }),
+        }, 2);
+        const data = await response.json();
+        if (response.ok && data.tableReady === true) {
+          await loadCloudSavedSearches(syncKey, false);
+          setSavedMessage(data.deals ? `Знайдено ${data.deals} пошук(и) з нижчою ціною.` : "Перевірено в хмарі. Нових знижень поки немає.");
+          return;
+        }
+      }
+      const next: SavedSearch[] = [];
+      for (const item of savedSearches) next.push(item.enabled ? await checkSavedSearchLocal(item) : item);
+      persistSavedSearches(next);
+      const deals = next.filter(item => (item.dealDrop || 0) > 0).length;
+      setSavedMessage(deals ? `Знайдено ${deals} пошук(и) з нижчою ціною.` : "Перевірено локально. Нових знижень поки немає.");
+    } finally {
+      setSavedCheckLoading(false);
+    }
+  }
+
+  async function checkOneSavedSearch(item: SavedSearch) {
+    setSavedMessage(`Перевіряю: ${item.query || item.category}…`);
+    if (savedCloudReady === true && syncKey) {
+      try {
+        const response = await fetchWithRetry("/api/saved-searches/check", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: syncKey, id: item.id }),
+        }, 2);
+        const data = await response.json();
+        if (response.ok && Array.isArray(data.items) && data.items[0]) {
+          const updated = data.items[0] as SavedSearch;
+          persistSavedSearches(savedSearches.map(search => search.id === item.id ? updated : search));
+          setSavedMessage((updated.dealDrop || 0) > 0 ? `Ціна нижча на ${money.format(updated.dealDrop || 0)}.` : "Перевірено в хмарі. Нової нижчої ціни немає.");
+          return;
+        }
+      } catch {}
+    }
+    const updated = await checkSavedSearchLocal(item);
+    persistSavedSearches(savedSearches.map(search => search.id === item.id ? updated : search));
+    void syncSavedSearchToCloud(updated, syncKey, false);
+    setSavedMessage((updated.dealDrop || 0) > 0 ? `Ціна нижча на ${money.format(updated.dealDrop || 0)}.` : "Перевірено. Нової нижчої ціни немає.");
+  }
+
+  async function removeSavedSearch(id: string) {
+    persistSavedSearches(savedSearches.filter(item => item.id !== id));
+    if (syncKey && savedCloudReady === true) {
+      try {
+        await fetchWithRetry("/api/saved-searches", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: syncKey, id }) }, 2);
+      } catch {}
+    }
+  }
+
+  async function toggleSavedSearch(id: string) {
+    const current = savedSearches.find(item => item.id === id);
+    if (!current) return;
+    const updated: SavedSearch = { ...current, enabled: !current.enabled, updatedAt: new Date().toISOString() };
+    persistSavedSearches(savedSearches.map(item => item.id === id ? updated : item));
+    void syncSavedSearchToCloud(updated, syncKey, false);
   }
 
   function toggleCompare(product: Product) {
@@ -235,6 +596,8 @@ export default function SmartBuyApp() {
       setCloudConfigured(configured);
       if (!configured) {
         setCloudEnabled(false);
+        setSavedCloudReady(false);
+        setSavedCloudMessage("Supabase не налаштований для цього deployment — Saved Searches працюють локально.");
         const missing: string[] = [];
         if (!status?.hasUrl) missing.push("SUPABASE_URL");
         if (!status?.hasServerKey) missing.push("SUPABASE_SERVICE_ROLE_KEY / SUPABASE_SECRET_KEY");
@@ -244,9 +607,11 @@ export default function SmartBuyApp() {
       setCloudEnabled(true);
       setCloudDetail(status?.keySource === "secret" ? "Supabase підключено через серверний Secret key." : "Supabase підключено через серверний service role key.");
       await loadCloudWatchlist(key, true);
+      await loadCloudSavedSearches(key, true);
     } catch {
       // A temporary request failure must not silently reclassify an already-configured project as local.
       setCloudDetail("Не вдалося перевірити статус хмари. Онови сторінку — SmartBuy повторить спробу.");
+      setSavedCloudMessage("Не вдалося перевірити хмару для Saved Searches. Локальна копія залишається доступною.");
     }
   }
 
@@ -445,6 +810,7 @@ export default function SmartBuyApp() {
     setSyncKey(clean);
     setSyncInput("");
     await loadCloudWatchlist(clean);
+    await loadCloudSavedSearches(clean, true);
   }
 
   async function copySyncCode() {
@@ -452,8 +818,9 @@ export default function SmartBuyApp() {
   }
 
   const watchProducts = useMemo(() => Object.values(watching), [watching]);
-  const visibleProducts = tab === "watch" ? watchProducts : products;
-  const ukraineSourceLinks = useMemo(() => sourceLinks.filter(source => source.region !== "international"), [sourceLinks]);
+  const savedDealCount = useMemo(() => savedSearches.filter(item => (item.dealDrop || 0) > 0).length, [savedSearches]);
+  const visibleProducts = tab === "watch" ? watchProducts : tab === "saved" ? [] : products;
+  const ukraineSourceLinks = useMemo(() => sourceLinks.filter(source => source.region === "ukraine" && source.kind !== "private"), [sourceLinks]);
   const internationalSourceLinks = useMemo(() => sourceLinks.filter(source => source.region === "international"), [sourceLinks]);
   const privateSourceLinks = useMemo(() => sourceLinks.filter(source => source.kind === "private"), [sourceLinks]);
 
@@ -467,6 +834,7 @@ export default function SmartBuyApp() {
           <button className={tab === "search" ? "activeNav" : ""} onClick={() => setTab("search")}>Пошук</button>
           <button className={tab === "compare" ? "activeNav" : ""} onClick={() => { setTab("compare"); setCompareOpen(true); }}>Порівняння</button>
           <button className={tab === "watch" ? "activeNav" : ""} onClick={() => setTab("watch")}>Відстеження</button>
+          <button className={tab === "saved" ? "activeNav" : ""} onClick={() => setTab("saved")}>Збережені{savedDealCount > 0 ? ` · ${savedDealCount}` : ""}</button>
         </nav>
         <button className="iconButton" aria-label="Відстеження" onClick={() => setTab("watch")}>
           <Bell size={18}/>{watchProducts.length > 0 && <span className="badge">{watchProducts.length}</span>}
@@ -474,7 +842,7 @@ export default function SmartBuyApp() {
       </header>
 
       <section className="hero" id="search">
-        <div className="eyebrow"><Sparkles size={15}/> SmartBuy AI v1.0 · один запит на весь ринок</div>
+        <div className="eyebrow"><Sparkles size={15}/> SmartBuy AI v1.4 · Cloud Saved Searches + Deal Alerts</div>
         <h1>Знайди потрібну річ.<br/><span>Порівняй увесь ринок.</span></h1>
         <p>Українські магазини, приватні оголошення та закордонні майданчики в одному місці. SmartBuy показує автоматично підтверджені ціни окремо від прямих пошуків, щоб не вигадувати дані.</p>
 
@@ -485,7 +853,7 @@ export default function SmartBuyApp() {
         </form>
 
         <div className="quickRow">
-          {quickSearches.map(q => <button key={q} onClick={() => { setQuery(q); void runSearch(q, category, marketFilter); }}>{q}</button>)}
+          {quickSearches.map(q => <button key={q} onClick={() => { setQuery(q); void runSearch(q, category, marketScope, conditionFilter); }}>{q}</button>)}
         </div>
       </section>
 
@@ -493,32 +861,36 @@ export default function SmartBuyApp() {
         {tab === "search" && (
           <>
             <div className="sourceStatus marketStatus">
-              <div><BadgeCheck size={18}/><b>SmartBuy AI v1.0</b><span>{provider}</span></div>
+              <div><BadgeCheck size={18}/><b>SmartBuy AI v1.4</b><span>{provider}</span></div>
               <p><Info size={15}/> Зелені ціни — автоматично підтверджені джерела. OLX, Shafa, AliExpress, Temu, Amazon та недоступні для сервера магазини відкриваються точним прямим пошуком.</p>
             </div>
 
-            <div className="marketFilters">
-              {marketFilters.map(item => (
-                <button key={item.id} className={marketFilter === item.id ? "active" : ""} onClick={() => selectMarket(item.id)}>
-                  {filterIcon(item.id)}{item.label}
-                </button>
-              ))}
+            <div className="marketControlPanel">
+              <div className="marketControlBlock">
+                <span className="marketControlLabel">Де шукати</span>
+                <div className="marketScopeTabs">
+                  {marketScopeTabs.map(item => (
+                    <button key={item.id} className={marketScope === item.id ? "active" : ""} onClick={() => selectMarketScope(item.id)}>
+                      {scopeIcon(item.id)}<span>{item.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="marketControlBlock conditionBlock">
+                <span className="marketControlLabel">Стан товару</span>
+                <div className="conditionTabs">
+                  {conditionTabs.map(item => (
+                    <button key={item.id} className={conditionFilter === item.id ? "active" : ""} onClick={() => selectCondition(item.id)}>{item.label}</button>
+                  ))}
+                </div>
+              </div>
             </div>
 
-            <div className="marketUniverse">
-              <button className={marketFilter === "stores" || marketFilter === "new" ? "active" : ""} onClick={() => selectMarket("stores")}>
-                <Store size={18}/><div><b>Магазини України</b><span>ціни SmartBuy + прямий пошук</span></div>
-              </button>
-              <button className={marketFilter === "private" || marketFilter === "used" ? "active" : ""} onClick={() => selectMarket("private")}>
-                <UserRound size={18}/><div><b>Від людей</b><span>OLX · Shafa · б/в</span></div>
-              </button>
-              <button className={marketFilter === "international" ? "active" : ""} onClick={() => selectMarket("international")}>
-                <Globe2 size={18}/><div><b>Закордон</b><span>AliExpress · Temu · Amazon</span></div>
-              </button>
-            </div>
-
-            <div className="categories">
-              {categories.map(item => <button key={item} className={category === item ? "active" : ""} onClick={() => selectCategory(item)}>{item}</button>)}
+            <div className="categoriesWrap">
+              <span className="marketControlLabel">Категорія</span>
+              <div className="categories">
+                {categories.map(item => <button key={item.value} className={category === item.value ? "active" : ""} onClick={() => selectCategory(item.value)}>{item.label}</button>)}
+              </div>
             </div>
 
             {searched && (
@@ -535,7 +907,7 @@ export default function SmartBuyApp() {
             {sourceLinks.length > 0 && (
               <section className="sourceLauncher">
                 <div className="sourceLauncherHead">
-                  <div><h3>Де SmartBuy шукає цей товар</h3><p>v1.0 чітко розділяє автоматичні ціни та прямі переходи. Ти бачиш весь ринок, але непідтверджена ціна ніколи не видається за live.</p></div>
+                  <div><h3>Де SmartBuy шукає цей товар</h3><p>v1.4 чітко розділяє ринок, стан товару, автоматичні ціни та прямі переходи. Ти бачиш весь ринок, але непідтверджена ціна ніколи не видається за live.</p></div>
                   <span>{sourceLinks.filter(s => s.access === "live").length} авто · {sourceLinks.filter(s => s.access === "direct").length} прямий</span>
                 </div>
 
@@ -546,7 +918,7 @@ export default function SmartBuyApp() {
                 </div>
 
                 {ukraineSourceLinks.length > 0 && (
-                  <details className="sourceGroup" open={marketFilter !== "international"}>
+                  <details className="sourceGroup" open={marketScope !== "international"}>
                     <summary><span><Store size={16}/> Український ринок</span><b>{ukraineSourceLinks.length} джерел</b><ChevronDown size={16}/></summary>
                     <div className="sourceLinks">
                       {ukraineSourceLinks.map(source => {
@@ -558,8 +930,17 @@ export default function SmartBuyApp() {
                   </details>
                 )}
 
+                {privateSourceLinks.length > 0 && (
+                  <details className="sourceGroup" open={marketScope === "private"}>
+                    <summary><span><UserRound size={16}/> Від людей</span><b>{privateSourceLinks.length} майданчики</b><ChevronDown size={16}/></summary>
+                    <div className="sourceLinks privateLinks">
+                      {privateSourceLinks.map(source => <a key={source.id} href={source.url} target="_blank" rel="noreferrer" className="sourceChip private access-direct"><span><UserRound size={16}/></span><div><b>{source.name}</b><small>відкрити точний запит</small></div><ExternalLink size={14}/></a>)}
+                    </div>
+                  </details>
+                )}
+
                 {internationalSourceLinks.length > 0 && (
-                  <details className="sourceGroup" open={marketFilter === "international"}>
+                  <details className="sourceGroup" open={marketScope === "international"}>
                     <summary><span><Globe2 size={16}/> Закордон</span><b>{internationalSourceLinks.length} майданчики</b><ChevronDown size={16}/></summary>
                     <div className="sourceLinks internationalLinks">
                       {internationalSourceLinks.map(source => <a key={source.id} href={source.url} target="_blank" rel="noreferrer" className="sourceChip international access-direct"><span><Globe2 size={16}/></span><div><b>{source.name}</b><small>відкрити точний запит</small></div><ExternalLink size={14}/></a>)}
@@ -590,16 +971,48 @@ export default function SmartBuyApp() {
           </section>
         )}
 
+        {tab === "saved" && (
+          <section className="savedSearchesPanel">
+            <div className="savedSearchesHead">
+              <div>
+                <div className="savedEyebrow"><Bookmark size={15}/> Збережені пошуки</div>
+                <h2>Deal Alerts</h2>
+                <p>SmartBuy запам’ятовує запит і базову ціну. У хмарному режимі пошуки синхронізуються між пристроями та автоматично перевіряються раз на день.</p>
+              </div>
+              <button className="savedCheckAll" onClick={() => void checkAllSavedSearches()} disabled={savedCheckLoading || savedSearches.length === 0}><RefreshCw size={15} className={savedCheckLoading ? "spin" : ""}/>{savedCheckLoading ? "Перевіряю…" : "Перевірити всі"}</button>
+            </div>
+            <div className={`savedCloudState ${savedCloudReady === true ? "on" : savedCloudReady === false ? "off" : "checking"}`}>
+              {savedCloudReady === true ? <Cloud size={16}/> : <CloudOff size={16}/>}
+              <div><b>{savedCloudReady === true ? "Saved Searches у хмарі" : savedCloudReady === false ? "Saved Searches локально" : "Перевіряю синхронізацію"}</b><span>{savedCloudMessage || "SmartBuy перевіряє готовність Supabase."}</span></div>
+            </div>
+            {savedDealCount > 0 && <div className="dealAlertSummary"><Zap size={17}/><div><b>Є нові вигідні ціни</b><span>{savedDealCount} збережених пошук(и) стали дешевшими від попередньої базової ціни.</span></div></div>}
+            {savedMessage && <div className="savedMessage">{savedMessage}</div>}
+            {savedSearches.length === 0 ? <div className="savedEmpty"><Bookmark size={28}/><h3>Ще немає збережених пошуків</h3><p>Зроби пошук і натисни «Зберегти пошук» біля результатів.</p></div> : <div className="savedSearchGrid">
+              {savedSearches.map(item => {
+                const hasDrop = (item.dealDrop || 0) > 0;
+                return <article className={`savedSearchCard ${hasDrop ? "hasDeal" : ""}`} key={item.id}>
+                  <div className="savedCardTop"><div><span className={`savedStatus ${item.enabled ? "on" : "off"}`}>{item.enabled ? "Активний" : "Призупинено"}</span><h3>{item.query || item.category}</h3><p>{savedSearchLabel(item)}</p></div><button className="savedDelete" onClick={() => removeSavedSearch(item.id)} title="Видалити"><Trash2 size={15}/></button></div>
+                  <div className="savedPriceRow"><div><span>Остання найкраща</span><b>{item.lastBestPrice ? money.format(item.lastBestPrice) : "ще немає"}</b></div>{hasDrop && <div className="savedDrop"><TrendingDown size={14}/><span>нижче на</span><b>{money.format(item.dealDrop || 0)}</b></div>}</div>
+                  <div className="savedMeta"><span>{item.resultCount ?? 0} моделей</span><span>{item.offerCount ?? 0} пропозицій</span><span>{item.lastCheckedAt ? `перевірено ${new Date(item.lastCheckedAt).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}` : "ще не перевірявся"}</span>{item.lastCheckStatus === "no_live_data" && <span>немає live-ціни</span>}{item.lastCheckStatus === "error" && <span>помилка перевірки</span>}</div>
+                  <div className="savedActions"><button onClick={() => void openSavedSearch(item)}><Play size={14}/> Відкрити</button><button onClick={() => void checkOneSavedSearch(item)}><RefreshCw size={14}/> Перевірити</button><button className={item.enabled ? "pause" : "resume"} onClick={() => toggleSavedSearch(item.id)}>{item.enabled ? "Призупинити" : "Увімкнути"}</button></div>
+                </article>;
+              })}
+            </div>}
+          </section>
+        )}
+
+        {tab !== "saved" && <>
         <div className="resultsHeader">
           <div>
             <h2>{tab === "watch" ? "Відстеження" : searched ? "Знайдені варіанти" : "Приклад об'єднаного ринку"}</h2>
             <p>{loading ? "Шукаю…" : tab === "watch" ? `${watchProducts.length} збережено` : `${products.length} моделей · ${coverage.totalOffers} пропозицій`}</p>
           </div>
-          {tab === "search" && <div className="filter"><SlidersHorizontal size={17}/><span>До</span><input inputMode="numeric" value={maxPrice} onChange={e => setMaxPrice(e.target.value.replace(/\D/g, ""))} placeholder="ціна, ₴"/><button onClick={() => void runSearch()}>OK</button></div>}
+          {tab === "search" && <div className="resultsTools"><button className="saveSearchButton" onClick={saveCurrentSearch}><Bookmark size={15}/> Зберегти пошук</button><div className="filter"><SlidersHorizontal size={17}/><span>До</span><input inputMode="numeric" value={maxPrice} onChange={e => setMaxPrice(e.target.value.replace(/\D/g, ""))} placeholder="ціна, ₴"/><button onClick={() => void runSearch()}>OK</button></div></div>}
         </div>
+        {tab === "search" && savedMessage && <div className="searchSaveNotice"><Bookmark size={13}/>{savedMessage}</div>}
 
         {loading && tab === "search" ? <div className="loadingGrid">{[1,2,3].map(x => <div className="skeleton" key={x}/>)}</div> : visibleProducts.length === 0 ? (
-          <div className="empty"><ShoppingBag size={32}/><h3>{tab === "watch" ? "Тут поки порожньо" : "Нічого не знайшов"}</h3><p>{tab === "watch" ? "Натисни сердечко на товарі — він зʼявиться тут." : "Спробуй коротший запит або вибери «Усі»."}</p></div>
+          <div className="empty"><ShoppingBag size={32}/><h3>{tab === "watch" ? "Тут поки порожньо" : "Нічого не знайшов"}</h3><p>{tab === "watch" ? "Натисни сердечко на товарі — він зʼявиться тут." : "Спробуй коротший запит або вибери «Весь ринок»."}</p></div>
         ) : (
           <div className="grid">
             {visibleProducts.map((product, index) => {
@@ -684,15 +1097,93 @@ export default function SmartBuyApp() {
             })}
           </div>
         )}
+        </>}
       </section>
 
       {compare.length > 0 && <div className="compareBar"><div><b>Порівняння</b><span>{compare.length}/3 товари</span></div><div className="compareNames">{compare.map(p => <span key={p.id}>{p.title}<button onClick={() => toggleCompare(p)}><X size={13}/></button></span>)}</div><button className="primary" onClick={() => setCompareOpen(true)}>Порівняти</button></div>}
 
-      {compareOpen && <div className="modalBackdrop" onMouseDown={() => setCompareOpen(false)}><div className="compareModal" onMouseDown={e => e.stopPropagation()}><div className="modalHeader"><div><h2>Порівняння</h2><p>До 3 моделей поруч.</p></div><button className="closeButton" onClick={() => setCompareOpen(false)}><X/></button></div>{compare.length === 0 ? <div className="empty"><p>Додай товари кнопкою «Порівняти».</p></div> : <div className="compareTableWrap"><table className="compareTable"><thead><tr><th></th>{compare.map(p => <th key={p.id}>{p.title}</th>)}</tr></thead><tbody><tr><td>Найнижча ціна</td>{compare.map(p => <td key={p.id}><b>{money.format(p.bestPrice)}</b></td>)}</tr><tr><td>Нове від</td>{compare.map(p => <td key={p.id}>{bestByCondition(p.offers,"new") ? money.format(bestByCondition(p.offers,"new")!) : "—"}</td>)}</tr><tr><td>Б/в від</td>{compare.map(p => <td key={p.id}>{bestByCondition(p.offers,"used") ? money.format(bestByCondition(p.offers,"used")!) : "—"}</td>)}</tr><tr><td>Smart score</td>{compare.map(p => <td key={p.id}>{p.score}/100</td>)}</tr><tr><td>Пропозицій</td>{compare.map(p => <td key={p.id}>{p.offers.length}</td>)}</tr></tbody></table></div>}</div></div>}
+      {compareOpen && <div className="modalBackdrop" onMouseDown={() => setCompareOpen(false)}><div className="compareModal" onMouseDown={e => e.stopPropagation()}><div className="modalHeader"><div><h2>Порівняння</h2><p>До 3 моделей поруч.</p></div><button className="closeButton" onClick={() => setCompareOpen(false)}><X/></button></div>{compare.length === 0 ? <div className="empty"><p>Додай товари кнопкою «Порівняти».</p></div> : <div className="compareTableWrap"><table className="compareTable"><thead><tr><th></th>{compare.map(p => <th key={p.id}>{p.title}</th>)}</tr></thead><tbody><tr><td>Найнижча ціна</td>{compare.map(p => <td key={p.id}><b>{money.format(p.bestPrice)}</b></td>)}</tr><tr><td>Нове від</td>{compare.map(p => <td key={p.id}>{bestByCondition(p.offers,"new") ? money.format(bestByCondition(p.offers,"new")!) : "—"}</td>)}</tr><tr><td>Б/в від</td>{compare.map(p => <td key={p.id}>{bestByCondition(p.offers,"used") ? money.format(bestByCondition(p.offers,"used")!) : "—"}</td>)}</tr><tr><td>Smart score</td>{compare.map(p => <td key={p.id}>{p.score}/100</td>)}</tr><tr><td>Пропозицій</td>{compare.map(p => <td key={p.id}>{p.offers.length}</td>)}</tr><tr><td>Медіана ринку</td>{compare.map(p => <td key={p.id}>{medianOfferPrice(p.offers) ? money.format(medianOfferPrice(p.offers)!) : "—"}</td>)}</tr><tr><td>Джерел</td>{compare.map(p => <td key={p.id}>{new Set(p.offers.map(o => o.marketplace)).size}</td>)}</tr></tbody></table></div>}</div></div>}
 
-      {selected && <div className="modalBackdrop detailBackdrop" onMouseDown={() => setSelected(null)}><aside className="detailDrawer" onMouseDown={e => e.stopPropagation()}><button className="closeButton drawerClose" onClick={() => setSelected(null)}><X/></button><div className="detailVisual">{selected.imageUrl ? <img src={selected.imageUrl} alt={selected.title}/> : selected.image}</div><div className="score"><Sparkles size={14}/> Smart score {selected.score}/100</div><h2>{selected.title}</h2><p className="subtitle">{selected.subtitle}</p><div className="detailPrice">від {money.format(selected.bestPrice)}</div><div className="drawerTrackRow"><button className={`trackButton ${watching[selected.id] ? "saved" : ""}`} onClick={() => void toggleWatch(selected)}><Heart size={16} fill={watching[selected.id] ? "currentColor" : "none"}/>{watching[selected.id] ? "Відстежується" : "Відстежувати"}</button><div className="drawerTarget"><Target size={14}/><input inputMode="numeric" value={targetPrices[selected.id] || ""} onChange={e => updateTarget(selected, e.target.value)} placeholder="цільова ціна"/><span>₴</span><button onClick={() => void commitTarget(selected)}>OK</button></div></div><h3><TrendingDown size={16}/> Історія ціни</h3><PriceHistoryChart points={history.length ? history : (selected.priceHistory || [])} currentPrice={selected.bestPrice}/><p className="historyHint">{historyCloud ? "Дані з Supabase. Історія оновлюється під час пошуку, ручної перевірки та автоматичної щоденної перевірки." : "Підключи Supabase, щоб SmartBuy накопичував реальну історію ціни між пошуками."}</p><div className="aiBox"><b><Sparkles size={14}/> Smart-висновок</b><p>{selected.aiSummary}</p></div><div className="drawerMarketJump"><b>Перевірити на інших майданчиках</b><div>{marketJumpLinks(selected.title).map(link => <a key={link.name} href={link.url} target="_blank" rel="noreferrer">{link.kind === "private" ? <UserRound size={13}/> : <Globe2 size={13}/>} {link.name}<ExternalLink size={12}/></a>)}</div></div><h3>Ключове</h3><div className="highlights">{selected.highlights.map(x => <span key={x}><Check size={13}/>{x}</span>)}</div><h3>Пропозиції з ринку</h3>{selected.offers.map((o, i) => <div className={`detailOffer ${o.sellerType} ${o.priceAnomaly ? "priceAnomaly" : ""}`} key={`${o.store}-${i}`}><div><b>{o.marketplace} · {conditionLabel(o.condition)}</b><small>{o.sellerType === "private" ? "Приватний продавець" : o.sellerName || o.store}</small>{o.city && <small><MapPin size={12}/> {o.city}</small>}{o.postedAt && <small><Clock3 size={12}/> {o.postedAt}</small>}{o.matchConfidence ? <small>Збіг моделі: {o.matchConfidence}%</small> : null}{o.priceAnomaly ? <small className="anomalyText">⚠ Ціна не використовується як рекомендований мінімум</small> : null}</div><strong>{money.format(o.price)}</strong>{o.url && <a href={o.url} target="_blank" rel="noreferrer">Відкрити <ExternalLink size={14}/></a>}</div>)}</aside></div>}
+      {selected && <div className="modalBackdrop detailBackdrop" onMouseDown={() => setSelected(null)}>
+        <aside className="detailDrawer detailDrawerV11" onMouseDown={e => e.stopPropagation()}>
+          <button className="closeButton drawerClose" onClick={() => setSelected(null)}><X/></button>
+          <div className="detailHeroV11">
+            <div className="detailVisual">{selected.imageUrl ? <img src={selected.imageUrl} alt={selected.title}/> : selected.image}</div>
+            <div className="detailHeroInfo">
+              <div className="score"><Sparkles size={14}/> Smart score {selected.score}/100</div>
+              <h2>{selected.title}</h2>
+              <p className="subtitle">{selected.subtitle}</p>
+              <div className="detailPrice">від {money.format(selected.bestPrice)}</div>
+              <div className="drawerTrackRow">
+                <button className={`trackButton ${watching[selected.id] ? "saved" : ""}`} onClick={() => void toggleWatch(selected)}><Heart size={16} fill={watching[selected.id] ? "currentColor" : "none"}/>{watching[selected.id] ? "Відстежується" : "Відстежувати"}</button>
+                <div className="drawerTarget"><Target size={14}/><input inputMode="numeric" value={targetPrices[selected.id] || ""} onChange={e => updateTarget(selected, e.target.value)} placeholder="цільова ціна"/><span>₴</span><button onClick={() => void commitTarget(selected)}>OK</button></div>
+              </div>
+            </div>
+          </div>
 
-      <footer><div className="brand"><div className="logo">S</div><span>SmartBuy AI</span></div><p>v1.0 · Україна + приватні оголошення + AliExpress / Temu / Amazon · live-ціни відділені від прямого пошуку.</p></footer>
+          {selectedMetrics && <section className="dealDashboard">
+            <div className="dealDashboardHeader"><div><span>SmartBuy Market Check</span><h3>Де вигідніше купити зараз</h3></div>{selectedMetrics.best?.marketplace && <b>{selectedMetrics.best.marketplace}</b>}</div>
+            {selectedBestValue && <div className="bestValueBanner">
+              <div><Sparkles size={16}/><span><b>Найкращий баланс</b><small>{selectedBestValue.marketplace} · {conditionLabel(selectedBestValue.condition)} · Smart Value {offerValueScore(selectedBestValue, selectedMetrics.median)}/100</small></span></div>
+              <strong>{money.format(selectedBestValue.price)}</strong>
+            </div>}
+            <div className="dealStats">
+              <div><span>Найкраща підтверджена</span><b>{selectedMetrics.best ? money.format(selectedMetrics.best.price) : "—"}</b></div>
+              <div><span>Медіана ринку</span><b>{selectedMetrics.median ? money.format(selectedMetrics.median) : "—"}</b></div>
+              <div><span>Економія до медіани</span><b>{selectedMetrics.savingVsMedian > 0 ? money.format(selectedMetrics.savingVsMedian) : "—"}</b></div>
+              <div><span>Джерел у порівнянні</span><b>{selectedMetrics.sources}</b></div><div><span>Потребують перевірки</span><b>{selectedRiskCount}</b></div>
+            </div>
+            <div className="marketChannelRows">
+              {bestBySellerType(selected.offers, "store") && <div><span><Store size={14}/> Магазини України</span><b>{bestBySellerType(selected.offers, "store")!.marketplace}</b><strong>{money.format(bestBySellerType(selected.offers, "store")!.price)}</strong></div>}
+              {bestBySellerType(selected.offers, "private") ? <div><span><UserRound size={14}/> Від людей</span><b>{bestBySellerType(selected.offers, "private")!.marketplace}</b><strong>{money.format(bestBySellerType(selected.offers, "private")!.price)}</strong></div> : <div className="channelUnavailable"><span><UserRound size={14}/> Від людей</span><b>OLX / Shafa</b><strong>відкрити пошук</strong></div>}
+              {bestBySellerType(selected.offers, "international") ? <div><span><Globe2 size={14}/> Закордон</span><b>{bestBySellerType(selected.offers, "international")!.marketplace}</b><strong>{money.format(bestBySellerType(selected.offers, "international")!.price)}</strong></div> : <div className="channelUnavailable"><span><Globe2 size={14}/> Закордон</span><b>AliExpress / Temu / Amazon</b><strong>ціни не підключені</strong></div>}
+            </div>
+          </section>}
+
+          <h3><TrendingDown size={16}/> Історія ціни</h3>
+          <PriceHistoryChart points={history.length ? history : (selected.priceHistory || [])} currentPrice={selected.bestPrice}/>
+          <p className="historyHint">{historyCloud ? "Дані з Supabase. Історія оновлюється під час пошуку, ручної перевірки та автоматичної щоденної перевірки." : "Підключи Supabase, щоб SmartBuy накопичував реальну історію ціни між пошуками."}</p>
+
+          <div className="aiBox detailAiBox"><b><Sparkles size={14}/> Smart-висновок</b><p>{selected.aiSummary}</p></div>
+          <div className="drawerMarketJump"><b>Перевірити на інших майданчиках</b><div>{marketJumpLinks(selected.title).map(link => <a key={link.name} href={link.url} target="_blank" rel="noreferrer">{link.kind === "private" ? <UserRound size={13}/> : <Globe2 size={13}/>} {link.name}<ExternalLink size={12}/></a>)}</div></div>
+
+          <h3>Ключове</h3>
+          <div className="highlights">{selected.highlights.map(x => <span key={x}><Check size={13}/>{x}</span>)}</div>
+
+          <section className="offerExplorer">
+            <div className="offerExplorerTitle"><div><h3>Усі продавці</h3><p>{selectedOffers.length} із {selected.offers.length} пропозицій</p></div><span>{selectedMetrics?.best?.marketplace ? `мінімум: ${selectedMetrics.best.marketplace}` : "SmartBuy"}</span></div>
+            <div className="offerExplorerControls">
+              <div className="offerFilterTabs">
+                {([['all','Усі'],['new','Нові'],['used','Б/в'],['store','Магазини'],['private','Від людей']] as [OfferViewFilter,string][]).map(([id,label]) => <button key={id} className={offerViewFilter === id ? "active" : ""} onClick={() => setOfferViewFilter(id)}>{label}</button>)}
+              </div>
+              <select value={offerSort} onChange={e => setOfferSort(e.target.value as OfferSort)} aria-label="Сортування пропозицій"><option value="value">За вигідністю</option><option value="recommended">Рекомендовані</option><option value="price">Від дешевих</option><option value="confidence">За точністю збігу</option></select>
+            </div>
+            <div className="detailOfferList">
+              {selectedOffers.length === 0 ? <div className="offerExplorerEmpty">У цьому фільтрі поки немає автоматично підтверджених пропозицій.</div> : selectedOffers.map((o, i) => {
+                const bestPrice = selectedMetrics?.best?.price;
+                const isBest = !o.priceAnomaly && bestPrice === o.price;
+                const median = selectedMetrics?.median || null;
+                const valueScore = offerValueScore(o, median);
+                const riskFlags = offerRiskFlags(o, median);
+                const isBestValue = selectedBestValue === o;
+                return <div className={`detailOffer detailOfferV11 ${o.sellerType} ${o.priceAnomaly ? "priceAnomaly" : ""}`} key={`${o.store}-${o.externalId || i}`}>
+                  <div className="offerRankBox">#{i + 1}</div>
+                  <div className="detailOfferInfo">
+                    <div className="detailOfferHead"><b>{o.marketplace}</b>{isBestValue && <span className="bestValueBadge"><Sparkles size={10}/> Найкращий баланс</span>}{isBest && <span className="bestDealBadge">Найнижча ціна</span>}<span className={`conditionTag ${o.condition}`}>{conditionLabel(o.condition)}</span></div>
+                    <small>{o.sellerType === "private" ? "Приватний продавець" : o.sellerName || o.store}</small>
+                    <div className="offerMetaRow">{o.city && <span><MapPin size={11}/> {o.city}</span>}{o.delivery && <span>{o.delivery}</span>}{o.warranty && <span>{o.warranty}</span>}</div>
+                    <div className="offerTrustRow"><span className={`valuePill ${valueScore >= 80 ? "good" : valueScore < 68 ? "warn" : ""}`}>Smart Value {valueScore}/100 · {valueScoreLabel(valueScore)}</span>{o.matchConfidence ? <span className="matchPill">збіг {o.matchConfidence}%</span> : null}{o.verifiedSeller ? <span className="verifiedPill"><ShieldCheck size={11}/> перевірений</span> : null}{o.priceAnomaly ? <span className="anomalyPill">цінова аномалія</span> : null}{riskFlags.slice(0,2).map(flag => <span className="riskPill" key={flag}>{flag}</span>)}</div>
+                  </div>
+                  <div className="detailOfferBuy"><strong>{money.format(o.price)}</strong>{o.url && <a href={o.url} target="_blank" rel="noreferrer">До продавця <ExternalLink size={13}/></a>}</div>
+                </div>;
+              })}
+            </div>
+          </section>
+        </aside>
+      </div>}
+
+
+      <footer><div className="brand"><div className="logo">S</div><span>SmartBuy AI</span></div><p>v1.4 · Cloud Saved Searches · Deal Alerts · Smart Value · історія та відстеження цін.</p></footer>
     </main>
   );
 }

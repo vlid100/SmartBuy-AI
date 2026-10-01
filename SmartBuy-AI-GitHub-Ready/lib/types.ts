@@ -107,3 +107,23 @@ export type SearchApiResponse = {
   sourceLinks: SourceLink[];
   sourceStatuses?: SourceSearchStatus[];
 };
+
+export type SavedSearch = {
+  id: string;
+  query: string;
+  category: string;
+  marketScope: "all" | "ukraine" | "private" | "international";
+  conditionFilter: "all" | "new" | "used";
+  maxPrice: string;
+  createdAt: string;
+  updatedAt?: string;
+  lastCheckedAt?: string;
+  lastBestPrice?: number;
+  previousBestPrice?: number;
+  resultCount?: number;
+  offerCount?: number;
+  dealDrop?: number;
+  enabled: boolean;
+  lastCheckStatus?: "never" | "ok" | "no_live_data" | "error";
+  lastError?: string;
+};
