@@ -4,6 +4,7 @@ import { getSupabaseAdmin } from "@/lib/supabase-server";
 import { snapshotProducts } from "@/lib/persistence";
 import { bestProductMatch } from "@/lib/matching";
 import { createNotificationForHash } from "@/lib/notifications";
+import { importProductFromUrl } from "@/lib/product-import";
 
 const DEFAULT_LIMIT = 12;
 const MAX_LIMIT = 24;
@@ -59,6 +60,30 @@ async function writeTrackingStatus(productKey: string, tracking: ProductTracking
 async function refreshOne(stored: Product, previousBestPrice: number) {
   const checkedAt = new Date().toISOString();
   try {
+    if (stored.id.startsWith("import-") && stored.productUrl) {
+      const imported = await importProductFromUrl(stored.productUrl);
+      if (imported.ok && imported.product) {
+        const exact = imported.product;
+        const refreshed: Product = {
+          ...stored, ...exact, id: stored.id, title: stored.title || exact.title,
+          tracking: {
+            lastCheckedAt: checkedAt, status: "ok", message: `Оновлено напряму зі сторінки ${imported.sourceName || exact.source || "джерела"}.`,
+            previousBestPrice, lastSeenPrice: exact.bestPrice, sourceNames: [imported.sourceName || exact.source || "Direct URL"],
+            offerCount: exact.offers.length, matchConfidence: 100, matchedTitle: exact.title, lastSuccessfulAt: checkedAt, lastSuccessfulPrice: exact.bestPrice, consecutiveMisses: 0,
+          },
+        };
+        await snapshotProducts([refreshed]);
+        return { productKey: stored.id, status: "ok" as const, price: refreshed.bestPrice, previousPrice: previousBestPrice, sourceErrors: 0 };
+      }
+      const tracking: ProductTracking = {
+        lastCheckedAt: checkedAt, status: imported.blocked ? "not_found" : "error", message: imported.message, previousBestPrice, lastSeenPrice: previousBestPrice,
+        sourceNames: imported.sourceName ? [imported.sourceName] : [], offerCount: 0, lastSuccessfulAt: stored.tracking?.lastSuccessfulAt || (stored.tracking?.status === "ok" ? stored.tracking.lastCheckedAt : undefined),
+        lastSuccessfulPrice: stored.tracking?.lastSuccessfulPrice || stored.tracking?.lastSeenPrice || previousBestPrice, consecutiveMisses: (stored.tracking?.consecutiveMisses || 0) + 1,
+      };
+      await writeTrackingStatus(stored.id, tracking);
+      return { productKey: stored.id, status: imported.blocked ? "not_found" as const : "error" as const, price: previousBestPrice, sourceErrors: 1 };
+    }
+
     const live = await searchUkraineLive(stored.title);
     const candidates = groupLiveOffers(live.offers, stored.title);
     const matched = chooseMatch(stored, candidates);
@@ -80,6 +105,9 @@ async function refreshOne(stored: Product, previousBestPrice: number) {
         lastSeenPrice: previousBestPrice,
         sourceNames: [],
         offerCount: 0,
+        lastSuccessfulAt: stored.tracking?.lastSuccessfulAt || (stored.tracking?.status === "ok" ? stored.tracking.lastCheckedAt : undefined),
+        lastSuccessfulPrice: stored.tracking?.lastSuccessfulPrice || stored.tracking?.lastSeenPrice || previousBestPrice,
+        consecutiveMisses: (stored.tracking?.consecutiveMisses || 0) + 1,
       };
       await writeTrackingStatus(stored.id, tracking);
       return { productKey: stored.id, status: "not_found" as const, price: previousBestPrice, sourceErrors: failedSources.length };
@@ -101,6 +129,9 @@ async function refreshOne(stored: Product, previousBestPrice: number) {
         offerCount: match.offers.length,
         matchConfidence: matched ? Math.round(matched.match.score * 100) : undefined,
         matchedTitle: match.title,
+        lastSuccessfulAt: checkedAt,
+        lastSuccessfulPrice: match.bestPrice,
+        consecutiveMisses: 0,
       },
     };
     await snapshotProducts([refreshed]);
@@ -113,6 +144,9 @@ async function refreshOne(stored: Product, previousBestPrice: number) {
       message,
       previousBestPrice,
       lastSeenPrice: previousBestPrice,
+      lastSuccessfulAt: stored.tracking?.lastSuccessfulAt || (stored.tracking?.status === "ok" ? stored.tracking.lastCheckedAt : undefined),
+      lastSuccessfulPrice: stored.tracking?.lastSuccessfulPrice || stored.tracking?.lastSeenPrice || previousBestPrice,
+      consecutiveMisses: stored.tracking?.consecutiveMisses || 0,
     });
     return { productKey: stored.id, status: "error" as const, price: previousBestPrice, detail: message };
   }
@@ -189,7 +223,7 @@ export async function refreshTrackedProducts(options?: { productKeys?: string[];
               dedupeKey: `product:${result.productKey}:price:${Math.round(result.price)}`,
               kind: "price_drop",
               title: `Ціна впала на ${Math.round(drop).toLocaleString("uk-UA")} ₴`,
-              body: `${title}: зараз від ${Math.round(result.price).toLocaleString("uk-UA")} ₴.`,
+              body: `${title}: ${Math.round(result.previousPrice).toLocaleString("uk-UA")} ₴ → ${Math.round(result.price).toLocaleString("uk-UA")} ₴ (−${((drop / result.previousPrice) * 100).toFixed(1)}%).`,
               entityType: "product",
               entityId: result.productKey,
               price: result.price,

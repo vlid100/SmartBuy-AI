@@ -1,13 +1,17 @@
 import * as cheerio from "cheerio";
-import type { ListingCondition, Offer, Product, SourceSearchStatus } from "@/lib/types";
-import { liveSourceIds } from "@/lib/source-registry";
-import { evaluateTitleMatch } from "@/lib/matching";
+import type { ListingCondition, Offer, Product, SourceCapabilities, SourceSearchStatus } from "@/lib/types";
+import { liveSourceIds, probeSourceIds } from "@/lib/source-registry";
+import { sourceConnectorProfile, type ConnectorAdapterKind } from "@/lib/source-capabilities";
+import { evaluateTitleMatch, productIdentityKey, productIdentityMeta } from "@/lib/matching";
+import { expandSearchQuery } from "@/lib/query-expansion";
+import { decorateRouterStatus, isCoolingDown, rankSources, recordAndDecorateRouterStatus, routerCooldownMessage, type RouterPhase } from "@/lib/source-router";
 
 export type LiveSource = {
   id: string;
   name: string;
   sellerType: "store" | "private";
   trusted: boolean;
+  tier: "stable" | "probe";
   buildUrl: (query: string) => string;
   selectors?: {
     card: string;
@@ -17,86 +21,125 @@ export type LiveSource = {
     image?: string;
     meta?: string;
   };
+  connectorAdapter?: ConnectorAdapterKind;
+  capabilities?: SourceCapabilities;
 };
 
 type SourceResult = { offers: Offer[]; status: SourceSearchStatus };
+type LiveMode = "stores" | "private" | "all";
+type CacheEntry = { expiresAt: number; value: SourceResult };
 
 const enc = (value: string) => encodeURIComponent(value.trim());
 const slug = (value: string) => value.trim().toLowerCase().replace(/[^a-zа-яіїєґ0-9]+/gi, "-").replace(/^-|-$/g, "");
+const tierFor = (id: string): "stable" | "probe" => liveSourceIds.has(id) ? "stable" : "probe";
 
-export const liveSources: LiveSource[] = [
+const rawLiveSources: LiveSource[] = [
   {
-    id: "olx", name: "OLX", sellerType: "private", trusted: false,
+    id: "olx", name: "OLX", sellerType: "private", trusted: false, tier: tierFor("olx"),
     buildUrl: q => `https://www.olx.ua/uk/list/q-${slug(q)}/`,
     selectors: { card: '[data-cy="l-card"], [data-testid="l-card"], article', title: 'h4, h6, [data-cy="ad-card-title"], [data-testid="ad-title"]', price: '[data-testid="ad-price"], p:contains("грн")', link: 'a[href]', image: 'img', meta: '[data-testid="location-date"]' }
   },
   {
-    id: "rozetka", name: "Rozetka", sellerType: "store", trusted: true,
+    id: "rozetka", name: "Rozetka", sellerType: "store", trusted: true, tier: tierFor("rozetka"),
     buildUrl: q => `https://rozetka.com.ua/ua/search/?text=${enc(q)}`,
     selectors: { card: 'rz-catalog-tile, .goods-tile, [class*="catalog-grid"] li', title: '.goods-tile__title, .goods-tile__heading, [class*="title"]', price: '.goods-tile__price-value, .goods-tile__price, [class*="price"]', link: 'a.goods-tile__heading, a[href]', image: 'img' }
   },
   {
-    id: "prom", name: "Prom.ua", sellerType: "store", trusted: true,
+    id: "prom", name: "Prom.ua", sellerType: "store", trusted: true, tier: tierFor("prom"),
     buildUrl: q => `https://prom.ua/ua/search?search_term=${enc(q)}`,
     selectors: { card: '[data-qaid="product_block"], [data-testid*="product"], article', title: '[data-qaid="product_name"], [data-testid="product-name"], h2, h3', price: '[data-qaid="product_price"], [data-testid="product-price"], [class*="price"]', link: 'a[href]', image: 'img' }
   },
   {
-    id: "bigl", name: "Bigl.ua", sellerType: "store", trusted: true,
+    id: "bigl", name: "Bigl.ua", sellerType: "store", trusted: true, tier: tierFor("bigl"),
     buildUrl: q => `https://bigl.ua/ua/search?search_term=${enc(q)}`,
     selectors: { card: '[data-qaid="product_block"], [data-testid*="product"], article', title: '[data-qaid="product_name"], [data-testid="product-name"], h2, h3', price: '[data-qaid="product_price"], [data-testid="product-price"], [class*="price"]', link: 'a[href]', image: 'img' }
   },
   {
-    id: "hotline", name: "Hotline", sellerType: "store", trusted: true,
-    buildUrl: q => `https://hotline.ua/ua/sr/?q=${enc(q)}`,
-    selectors: { card: '[class*="product"], [class*="list-item"], article', title: 'a[class*="title"], [class*="title"]', price: '[class*="price"]', link: 'a[href]', image: 'img' }
-  },
-  {
-    id: "comfy", name: "COMFY", sellerType: "store", trusted: true,
-    buildUrl: q => `https://comfy.ua/ua/search/?q=${enc(q)}`,
-    selectors: { card: '[class*="product-card"], [class*="product-item"], article', title: '[class*="product-card__name"], [class*="product-item__name"], h2, h3', price: '[class*="price"]', link: 'a[href]', image: 'img' }
-  },
-  {
-    id: "foxtrot", name: "Foxtrot", sellerType: "store", trusted: true,
-    buildUrl: q => `https://www.foxtrot.com.ua/uk/search?query=${enc(q)}`,
-    selectors: { card: '[class*="product-card"], [class*="product-item"], article', title: '[class*="title"], h2, h3', price: '[class*="price"]', link: 'a[href]', image: 'img' }
-  },
-  {
-    id: "allo", name: "ALLO", sellerType: "store", trusted: true,
-    buildUrl: q => `https://allo.ua/ua/catalogsearch/result/?q=${enc(q)}`,
-    selectors: { card: '[class*="product-card"], [class*="product-item"], article', title: '[class*="product-name"], [class*="title"], h2, h3', price: '[class*="price"]', link: 'a[href]', image: 'img' }
-  },
-  {
-    id: "epicentr", name: "Епіцентр", sellerType: "store", trusted: true,
-    buildUrl: q => `https://epicentrk.ua/ua/search/?q=${enc(q)}`,
-    selectors: { card: '[class*="product-card"], [class*="card-product"], article', title: '[class*="title"], h2, h3', price: '[class*="price"]', link: 'a[href]', image: 'img' }
-  },
-  {
-    id: "moyo", name: "MOYO", sellerType: "store", trusted: true,
+    id: "moyo", name: "MOYO", sellerType: "store", trusted: true, tier: tierFor("moyo"),
     buildUrl: q => `https://www.moyo.ua/ua/search/new/?q=${enc(q)}`,
     selectors: { card: '[class*="product-item"], [class*="product-card"], article', title: '[class*="title"], h2, h3', price: '[class*="price"]', link: 'a[href]', image: 'img' }
   },
   {
-    id: "telemart", name: "TELEMART", sellerType: "store", trusted: true,
+    id: "hotline", name: "Hotline", sellerType: "store", trusted: true, tier: tierFor("hotline"),
+    buildUrl: q => `https://hotline.ua/ua/sr/?q=${enc(q)}`,
+    selectors: { card: '[class*="product"], [class*="list-item"], article', title: 'a[class*="title"], [class*="title"], h2, h3', price: '[class*="price"]', link: 'a[href]', image: 'img' }
+  },
+  {
+    id: "ekatalog", name: "E-Katalog", sellerType: "store", trusted: true, tier: tierFor("ekatalog"),
+    buildUrl: q => `https://ek.ua/ua/ek-list.php?search_=${enc(q)}`,
+    selectors: { card: '[class*="model-short"], [class*="model"], [class*="product"], article', title: '[class*="model-short-title"], [class*="title"], h2, h3', price: '[class*="price"]', link: 'a[href]', image: 'img' }
+  },
+  {
+    id: "comfy", name: "COMFY", sellerType: "store", trusted: true, tier: tierFor("comfy"),
+    buildUrl: q => `https://comfy.ua/ua/search/?q=${enc(q)}`,
+    selectors: { card: '[class*="product-card"], [class*="product-item"], article', title: '[class*="product-card__name"], [class*="product-item__name"], h2, h3', price: '[class*="price"]', link: 'a[href]', image: 'img' }
+  },
+  {
+    id: "foxtrot", name: "Foxtrot", sellerType: "store", trusted: true, tier: tierFor("foxtrot"),
+    buildUrl: q => `https://www.foxtrot.com.ua/uk/search?query=${enc(q)}`,
+    selectors: { card: '[class*="product-card"], [class*="product-item"], article', title: '[class*="title"], h2, h3', price: '[class*="price"]', link: 'a[href]', image: 'img' }
+  },
+  {
+    id: "allo", name: "ALLO", sellerType: "store", trusted: true, tier: tierFor("allo"),
+    buildUrl: q => `https://allo.ua/ua/catalogsearch/result/?q=${enc(q)}`,
+    selectors: { card: '[class*="product-card"], [class*="product-item"], article', title: '[class*="product-name"], [class*="title"], h2, h3', price: '[class*="price"]', link: 'a[href]', image: 'img' }
+  },
+  {
+    id: "epicentr", name: "Епіцентр", sellerType: "store", trusted: true, tier: tierFor("epicentr"),
+    buildUrl: q => `https://epicentrk.ua/ua/search/?q=${enc(q)}`,
+    selectors: { card: '[class*="product-card"], [class*="card-product"], article', title: '[class*="title"], h2, h3', price: '[class*="price"]', link: 'a[href]', image: 'img' }
+  },
+  {
+    id: "ktc", name: "KTC", sellerType: "store", trusted: true, tier: tierFor("ktc"),
+    buildUrl: q => `https://ktc.ua/search/?q=${enc(q)}`,
+    selectors: { card: '[class*="product"], [class*="catalog-item"], article', title: '[class*="title"], [class*="name"], h2, h3', price: '[class*="price"]', link: 'a[href]', image: 'img' }
+  },
+  {
+    id: "citrus", name: "Цитрус", sellerType: "store", trusted: true, tier: tierFor("citrus"),
+    buildUrl: q => `https://www.ctrs.com.ua/search/?q=${enc(q)}`,
+    selectors: { card: '[class*="product"], [class*="item-card"], article', title: '[class*="title"], [class*="name"], h2, h3', price: '[class*="price"]', link: 'a[href]', image: 'img' }
+  },
+  {
+    id: "stylus", name: "STYLUS", sellerType: "store", trusted: true, tier: tierFor("stylus"),
+    buildUrl: q => `https://stylus.ua/uk/search?q=${enc(q)}`,
+    selectors: { card: '[class*="product"], [class*="item"], article', title: '[class*="title"], [class*="name"], h2, h3', price: '[class*="price"]', link: 'a[href]', image: 'img' }
+  },
+  {
+    id: "mta", name: "MTA", sellerType: "store", trusted: true, tier: tierFor("mta"),
+    buildUrl: q => `https://mta.ua/search?search=${enc(q)}`,
+    selectors: { card: '[class*="product"], [class*="item"], article', title: '[class*="title"], [class*="name"], h2, h3', price: '[class*="price"]', link: 'a[href]', image: 'img' }
+  },
+  {
+    id: "telemart", name: "TELEMART", sellerType: "store", trusted: true, tier: tierFor("telemart"),
     buildUrl: q => `https://telemart.ua/ua/search/?search=${enc(q)}`,
     selectors: { card: '[class*="product-item"], [class*="product-card"], article', title: '[class*="title"], h2, h3', price: '[class*="price"]', link: 'a[href]', image: 'img' }
   },
   {
-    id: "brain", name: "BRAIN", sellerType: "store", trusted: true,
+    id: "brain", name: "BRAIN", sellerType: "store", trusted: true, tier: tierFor("brain"),
     buildUrl: q => `https://brain.com.ua/ukr/search/?Search=${enc(q)}`,
     selectors: { card: '[class*="product"], article', title: '[class*="title"], h2, h3', price: '[class*="price"]', link: 'a[href]', image: 'img' }
   },
   {
-    id: "shafa", name: "Shafa", sellerType: "private", trusted: false,
+    id: "shafa", name: "Shafa", sellerType: "private", trusted: false, tier: tierFor("shafa"),
     buildUrl: q => `https://shafa.ua/uk/search?search_text=${enc(q)}`,
     selectors: { card: '[class*="product-card"], [class*="item-card"], article', title: '[class*="title"], h2, h3', price: '[class*="price"]', link: 'a[href]', image: 'img' }
   },
 ];
 
-export const automaticLiveSources = liveSources.filter(source => liveSourceIds.has(source.id));
+export const liveSources: LiveSource[] = rawLiveSources.map(source => {
+  const connector = sourceConnectorProfile(source.id, source.tier === "stable" ? "live" : "probe", source.sellerType);
+  return { ...source, connectorAdapter: connector.adapter, capabilities: connector.capabilities };
+});
 
-const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 SmartBuyAI/0.9";
+export const stableLiveSources = liveSources.filter(source => liveSourceIds.has(source.id));
+export const probeLiveSources = liveSources.filter(source => probeSourceIds.has(source.id));
+export const automaticLiveSources = [...stableLiveSources, ...probeLiveSources];
+
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 SmartBuyAI/4.0";
 const PRICE_RE = /(?:₴|грн\.?|uah)?\s*([0-9][0-9\s\u00a0.,]{1,14})\s*(?:₴|грн\.?|uah)?/i;
+const BLOCK_PATTERNS = /captcha|cf-chl-|attention required[^<]{0,80}cloudflare|access denied|verify you are human|перевірте, що ви людина|доступ заборонено|unusual traffic|robot check/i;
 const STOP = new Set(["купити","ціна","ціни","новий","нова","нове","бв","б/в","бу","україна","україні","доставка","товар","смартфон","ноутбук","телефон","оригінал"]);
+const sourceCache = new Map<string, CacheEntry>();
 
 function cleanText(value?: string | null) { return (value || "").replace(/\s+/g, " ").trim(); }
 function parsePrice(value?: string | number | null): number | null {
@@ -108,6 +151,40 @@ function parsePrice(value?: string | number | null): number | null {
   const number = Number(digits);
   return Number.isFinite(number) && number >= 10 && number <= 20_000_000 ? Math.round(number) : null;
 }
+function parseRating(value: unknown): number | undefined {
+  const n = Number(String(value ?? "").replace(",", "."));
+  return Number.isFinite(n) && n > 0 && n <= 5 ? Math.round(n * 10) / 10 : undefined;
+}
+function parseCount(value: unknown): number | undefined {
+  const n = Number(String(value ?? "").replace(/[^0-9]/g, ""));
+  return Number.isFinite(n) && n > 0 ? Math.min(Math.round(n), 10_000_000) : undefined;
+}
+function aggregateRatingFrom(obj: Record<string, unknown>) {
+  const aggregate = obj.aggregateRating;
+  const source = aggregate && typeof aggregate === "object" && !Array.isArray(aggregate) ? aggregate as Record<string, unknown> : obj;
+  return {
+    rating: parseRating(valueAt(source, ["ratingValue", "rating", "value"])),
+    count: parseCount(valueAt(source, ["reviewCount", "ratingCount", "count"])),
+  };
+}
+function reviewSnippetsFrom(obj: Record<string, unknown>) {
+  const raw = obj.review ?? obj.reviews;
+  const items = Array.isArray(raw) ? raw : raw && typeof raw === "object" ? [raw] : [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of items.slice(0, 20)) {
+    if (!item || typeof item !== "object") continue;
+    const review = item as Record<string, unknown>;
+    const text = cleanText(String(valueAt(review, ["reviewBody", "description", "text", "name"]) || ""));
+    if (text.length < 12) continue;
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key); out.push(text.slice(0, 420));
+    if (out.length >= 6) break;
+  }
+  return out;
+}
+
 function absoluteUrl(url: string | undefined, base: string) {
   if (!url) return undefined;
   try { return new URL(url, base).toString(); } catch { return undefined; }
@@ -143,12 +220,11 @@ function usefulTitle(title: string, query: string) {
   if (q.length < 3) return true;
   const match = evaluateTitleMatch(q, t);
   const qTokens = titleTokens(q);
-  // For model-like queries (numbers/capacity/variants), require a reliable exact-family match.
   if (qTokens.some(token => /\d/.test(token)) || /\b(pro|max|ultra|plus|mini|air|lite|fe|se)\b/i.test(q)) return match.reliable;
   return match.reliable || similarity(t, q) >= 0.36;
 }
 
-function offerFrom(source: LiveSource, baseUrl: string, input: { title?: string; price?: unknown; url?: string; image?: unknown; meta?: string; externalId?: string }): Offer | null {
+function offerFrom(source: LiveSource, baseUrl: string, input: { title?: string; price?: unknown; url?: string; image?: unknown; meta?: string; externalId?: string; productRating?: unknown; reviewCount?: unknown; reviewSnippets?: string[] }): Offer | null {
   const title = cleanText(input.title);
   const price = parsePrice(input.price as string | number | null);
   const url = absoluteUrl(input.url, baseUrl);
@@ -171,6 +247,9 @@ function offerFrom(source: LiveSource, baseUrl: string, input: { title?: string;
     url,
     imageUrl: absoluteUrl(imageFrom(input.image), baseUrl),
     source: source.id,
+    productRating: parseRating(input.productRating),
+    productReviewCount: parseCount(input.reviewCount),
+    reviewSnippets: input.reviewSnippets?.filter(Boolean).slice(0, 6),
   };
 }
 
@@ -180,7 +259,7 @@ function parseCards(html: string, source: LiveSource, baseUrl: string): Offer[] 
   if (!source.selectors) return [];
   const $ = cheerio.load(html);
   const result: Offer[] = [];
-  $(source.selectors.card).slice(0, 40).each((_, element) => {
+  $(source.selectors.card).slice(0, 50).each((_, element) => {
     const card = $(element);
     const titleEl = card.find(source.selectors!.title).first();
     const linkEl = card.find(source.selectors!.link).first();
@@ -191,7 +270,7 @@ function parseCards(html: string, source: LiveSource, baseUrl: string): Offer[] 
       title: titleEl.attr("title") || titleEl.text() || linkEl.attr("title") || linkEl.text(),
       price: priceEl.attr("content") || priceEl.attr("data-price") || priceEl.text(),
       url: linkEl.attr("href"),
-      image: imageEl?.attr("src") || imageEl?.attr("data-src") || imageEl?.attr("data-lazy-src"),
+      image: imageEl?.attr("src") || imageEl?.attr("data-src") || imageEl?.attr("data-lazy-src") || imageEl?.attr("srcset")?.split(" ")[0],
       meta: metaEl?.text(),
       externalId: card.attr("data-id") || card.attr("data-product-id") || undefined,
     });
@@ -223,12 +302,12 @@ function shallowUrl(obj: Record<string, unknown>): string | undefined {
 function parseJsonCandidates(html: string, source: LiveSource, baseUrl: string): Offer[] {
   const $ = cheerio.load(html);
   const results: Offer[] = [];
-  const scripts = $('script[type="application/ld+json"], script#__NEXT_DATA__, script[type="application/json"]').toArray().slice(0, 35);
+  const scripts = $('script[type="application/ld+json"], script#__NEXT_DATA__, script[type="application/json"]').toArray().slice(0, 40);
   let visited = 0;
   const seenObjects = new Set<object>();
   function visit(node: unknown, depth = 0) {
-    if (visited++ > 18000 || depth > 13 || node === null || node === undefined) return;
-    if (Array.isArray(node)) { for (const item of node.slice(0, 250)) visit(item, depth + 1); return; }
+    if (visited++ > 22000 || depth > 14 || node === null || node === undefined) return;
+    if (Array.isArray(node)) { for (const item of node.slice(0, 300)) visit(item, depth + 1); return; }
     if (typeof node !== "object") return;
     if (seenObjects.has(node as object)) return; seenObjects.add(node as object);
     const obj = node as Record<string, unknown>;
@@ -236,7 +315,15 @@ function parseJsonCandidates(html: string, source: LiveSource, baseUrl: string):
     const price = shallowPrice(obj);
     const url = shallowUrl(obj);
     if (typeof name === "string" && price !== undefined && url) {
-      const offer = offerFrom(source, baseUrl, { title: name, price, url, image: valueAt(obj, ["image", "imageUrl", "photo", "thumbnail", "picture"]), externalId: String(valueAt(obj, ["sku", "id", "productId", "externalId"]) || "") || undefined });
+      const aggregate = aggregateRatingFrom(obj);
+      const offer = offerFrom(source, baseUrl, {
+        title: name, price, url,
+        image: valueAt(obj, ["image", "imageUrl", "photo", "thumbnail", "picture"]),
+        externalId: String(valueAt(obj, ["sku", "id", "productId", "externalId"]) || "") || undefined,
+        productRating: aggregate.rating,
+        reviewCount: aggregate.count,
+        reviewSnippets: reviewSnippetsFrom(obj),
+      });
       if (offer) results.push(offer);
     }
     for (const [key, value] of Object.entries(obj)) {
@@ -246,9 +333,34 @@ function parseJsonCandidates(html: string, source: LiveSource, baseUrl: string):
   }
   for (const el of scripts) {
     const text = $(el).html() || "";
-    if (!text || text.length > 6_000_000) continue;
+    if (!text || text.length > 7_000_000) continue;
     try { visit(JSON.parse(text)); } catch {}
   }
+  return results;
+}
+
+// Fallback parser for stores whose class names change frequently. It never trusts the result by itself:
+// every candidate still has to pass evaluateTitleMatch() before it reaches the user.
+function parseGenericAnchors(html: string, source: LiveSource, baseUrl: string): Offer[] {
+  const $ = cheerio.load(html);
+  const results: Offer[] = [];
+  $('a[href]').slice(0, 700).each((_, element) => {
+    const link = $(element);
+    const title = cleanText(link.attr("title") || link.text());
+    if (title.length < 4 || title.length > 220) return;
+    const container = link.closest('article, li, [class*="product"], [class*="card"], [class*="item"]').first();
+    const context = cleanText((container.length ? container : link.parent()).text()).slice(0, 900);
+    const price = parsePrice(context);
+    if (!price) return;
+    const image = (container.length ? container : link.parent()).find('img').first();
+    const offer = offerFrom(source, baseUrl, {
+      title,
+      price,
+      url: link.attr("href"),
+      image: image.attr("src") || image.attr("data-src") || image.attr("data-lazy-src"),
+    });
+    if (offer) results.push(offer);
+  });
   return results;
 }
 
@@ -258,7 +370,9 @@ function dedupeOffers(offers: Offer[], query: string, max = 10) {
     if (!offer.title || !usefulTitle(offer.title, query)) continue;
     const match = evaluateTitleMatch(query, offer.title);
     if (!match.reliable) continue;
-    const key = `${offer.marketplace}|${offer.url || offer.title}|${offer.price}`;
+    const normalizedUrl = (offer.url || "").replace(/[?#].*$/, "");
+    const normalizedTitle = titleTokens(offer.title).slice(0, 16).join(" ");
+    const key = `${offer.marketplace}|${normalizedUrl || normalizedTitle}|${offer.price}`;
     if (keys.has(key)) continue;
     keys.add(key);
     out.push({ ...offer, matchConfidence: Math.round(match.score * 100), matchConflicts: match.conflicts });
@@ -280,47 +394,312 @@ async function fetchWithTimeout(url: string, timeoutMs: number) {
         "user-agent": UA,
         "accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
         "accept-language": "uk-UA,uk;q=0.9,en;q=0.6",
+        "pragma": "no-cache",
+        "cache-control": "no-cache",
       },
     });
   } finally { clearTimeout(timeout); }
 }
 
-export async function searchSource(source: LiveSource, query: string): Promise<SourceResult> {
+function cacheKey(source: LiveSource, query: string) { return `${source.id}::${query.trim().toLowerCase()}`; }
+function readCache(source: LiveSource, query: string, phase: RouterPhase): SourceResult | null {
+  const key = cacheKey(source, query);
+  const item = sourceCache.get(key);
+  if (!item || item.expiresAt < Date.now()) { if (item) sourceCache.delete(key); return null; }
+  return {
+    offers: item.value.offers,
+    status: decorateRouterStatus(source, {
+      ...item.value.status,
+      durationMs: 0,
+      cached: true,
+      message: item.value.status.message || "кеш останньої перевірки",
+    }, phase),
+  };
+}
+function writeCache(source: LiveSource, query: string, value: SourceResult, phase: RouterPhase) {
+  value.status = recordAndDecorateRouterStatus(source, value.status, phase);
+  const ttlMs = Math.max(30_000, Math.min(Number(process.env.SMARTBUY_SOURCE_CACHE_MS || 240_000), 900_000));
+  sourceCache.set(cacheKey(source, query), { expiresAt: Date.now() + ttlMs, value });
+  if (sourceCache.size > 160) {
+    const first = sourceCache.keys().next().value as string | undefined;
+    if (first) sourceCache.delete(first);
+  }
+}
+
+export async function searchSource(source: LiveSource, query: string, phase: RouterPhase = "primary"): Promise<SourceResult> {
+  const cached = readCache(source, query, phase);
+  if (cached) return cached;
+
   const started = Date.now();
-  const url = source.buildUrl(query);
-  const timeoutMs = Math.max(1500, Math.min(Number(process.env.SMARTBUY_SOURCE_TIMEOUT_MS || 4500), 9000));
-  try {
-    const response = await fetchWithTimeout(url, timeoutMs);
-    const durationMs = Date.now() - started;
-    if (response.status === 403 || response.status === 401 || response.status === 429) {
-      return { offers: [], status: { id: source.id, name: source.name, state: "blocked", offerCount: 0, durationMs, message: `HTTP ${response.status}` } };
+  const stableTimeout = Math.max(1800, Math.min(Number(process.env.SMARTBUY_SOURCE_TIMEOUT_MS || 4300), 9000));
+  const probeTimeout = Math.max(1200, Math.min(Number(process.env.SMARTBUY_PROBE_TIMEOUT_MS || 2400), 5000));
+  const timeoutMs = source.tier === "stable" ? stableTimeout : probeTimeout;
+  const maxAttempts = source.tier === "stable" ? 2 : 1;
+  const variants = expandSearchQuery(query, source.id);
+  const planned = variants.length ? variants : [{ query, kind: "exact" as const, reason: "точний запит" }];
+  let lastMessage = "невідома помилка";
+  let networkAttempts = 0;
+  let variantsTried = 0;
+
+  for (let variantIndex = 0; variantIndex < planned.length; variantIndex++) {
+    const variant = planned[variantIndex];
+    const url = source.buildUrl(variant.query);
+    variantsTried += 1;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      networkAttempts += 1;
+      try {
+        const response = await fetchWithTimeout(url, timeoutMs);
+        const durationMs = Date.now() - started;
+        if (response.status === 403 || response.status === 401 || response.status === 429) {
+          const result: SourceResult = { offers: [], status: {
+            id: source.id, name: source.name, state: "blocked", offerCount: 0, durationMs,
+            message: `HTTP ${response.status}`, tier: source.tier, attempts: networkAttempts,
+            queryUsed: variant.query, queryVariantsTried: variantsTried, queryExpanded: variantIndex > 0,
+          } };
+          writeCache(source, query, result, phase); return result;
+        }
+        if (!response.ok) {
+          lastMessage = `HTTP ${response.status}`;
+          if (response.status >= 500 && attempt < maxAttempts) continue;
+          const result: SourceResult = { offers: [], status: {
+            id: source.id, name: source.name, state: "error", offerCount: 0, durationMs,
+            message: lastMessage, tier: source.tier, attempts: networkAttempts,
+            queryUsed: variant.query, queryVariantsTried: variantsTried, queryExpanded: variantIndex > 0,
+          } };
+          writeCache(source, query, result, phase); return result;
+        }
+        const contentType = response.headers.get("content-type") || "";
+        if (!contentType.includes("text/html") && !contentType.includes("application/xhtml") && !contentType.includes("json")) {
+          lastMessage = "не HTML/JSON";
+          // A different wording will not change the response format, so stop here.
+          const result: SourceResult = { offers: [], status: {
+            id: source.id, name: source.name, state: "empty", offerCount: 0, durationMs,
+            message: lastMessage, tier: source.tier, attempts: networkAttempts,
+            queryUsed: variant.query, queryVariantsTried: variantsTried, queryExpanded: variantIndex > 0,
+          } };
+          writeCache(source, query, result, phase); return result;
+        }
+        const html = await response.text();
+        if (BLOCK_PATTERNS.test(html.slice(0, 180_000))) {
+          const result: SourceResult = { offers: [], status: {
+            id: source.id, name: source.name, state: "blocked", offerCount: 0, durationMs,
+            message: "антибот / captcha", tier: source.tier, attempts: networkAttempts,
+            queryUsed: variant.query, queryVariantsTried: variantsTried, queryExpanded: variantIndex > 0,
+          } };
+          writeCache(source, query, result, phase); return result;
+        }
+        const parsed = [
+          ...parseCards(html, source, response.url || url),
+          ...parseJsonCandidates(html, source, response.url || url),
+          ...parseGenericAnchors(html, source, response.url || url),
+        ];
+        // Important: filter every expanded query against the ORIGINAL query, not the relaxed phrase.
+        // This is what prevents a wider marketplace search from mixing Pro/Pro Max, storage or model codes.
+        const offers = dedupeOffers(parsed, query, Number(process.env.SMARTBUY_MAX_PER_SOURCE || 12));
+        if (offers.length) {
+          const expanded = variantIndex > 0;
+          const result: SourceResult = {
+            offers,
+            status: {
+              id: source.id, name: source.name, state: "ok", offerCount: offers.length, durationMs,
+              message: expanded ? `знайдено через варіант запиту: ${variant.query}` : undefined,
+              tier: source.tier, attempts: networkAttempts,
+              queryUsed: variant.query, queryVariantsTried: variantsTried, queryExpanded: expanded,
+            }
+          };
+          writeCache(source, query, result, phase); return result;
+        }
+        lastMessage = "сторінка відповіла, але релевантні картки не розпізнані";
+        // Valid page but zero strict matches: only now try the next conservative query variant.
+        break;
+      } catch (error) {
+        lastMessage = error instanceof Error ? error.message : "невідома помилка";
+        if (attempt < maxAttempts) continue;
+        const durationMs = Date.now() - started;
+        const timeout = /abort|timeout/i.test(lastMessage);
+        const result: SourceResult = { offers: [], status: {
+          id: source.id, name: source.name, state: timeout ? "timeout" : "error", offerCount: 0, durationMs,
+          message: lastMessage, tier: source.tier, attempts: networkAttempts,
+          queryUsed: variant.query, queryVariantsTried: variantsTried, queryExpanded: variantIndex > 0,
+        } };
+        result.status = recordAndDecorateRouterStatus(source, result.status, phase);
+        sourceCache.set(cacheKey(source, query), { expiresAt: Date.now() + 25_000, value: result });
+        return result;
+      }
     }
-    if (!response.ok) return { offers: [], status: { id: source.id, name: source.name, state: "error", offerCount: 0, durationMs, message: `HTTP ${response.status}` } };
-    const contentType = response.headers.get("content-type") || "";
-    if (!contentType.includes("text/html") && !contentType.includes("application/xhtml") && !contentType.includes("json")) {
-      return { offers: [], status: { id: source.id, name: source.name, state: "empty", offerCount: 0, durationMs, message: "не HTML/JSON" } };
-    }
-    const html = await response.text();
-    const offers = dedupeOffers([...parseCards(html, source, response.url || url), ...parseJsonCandidates(html, source, response.url || url)], query, Number(process.env.SMARTBUY_MAX_PER_SOURCE || 10));
-    return { offers, status: { id: source.id, name: source.name, state: offers.length ? "ok" : "empty", offerCount: offers.length, durationMs, message: offers.length ? undefined : "сторінка відповіла, але картки не розпізнані" } };
-  } catch (error) {
-    const durationMs = Date.now() - started;
-    const message = error instanceof Error ? error.message : "невідома помилка";
-    const timeout = /abort|timeout/i.test(message);
-    return { offers: [], status: { id: source.id, name: source.name, state: timeout ? "timeout" : "error", offerCount: 0, durationMs, message } };
   }
+
+  const durationMs = Date.now() - started;
+  const result: SourceResult = { offers: [], status: {
+    id: source.id, name: source.name, state: "empty", offerCount: 0, durationMs,
+    message: variantsTried > 1 ? `перевірено ${variantsTried} точні варіанти запиту · карток не знайдено` : lastMessage,
+    tier: source.tier, attempts: networkAttempts,
+    queryUsed: planned[Math.max(0, variantsTried - 1)]?.query || query,
+    queryVariantsTried: variantsTried,
+    queryExpanded: variantsTried > 1,
+  } };
+  writeCache(source, query, result, phase);
+  return result;
 }
 
-export async function searchUkraineLive(query: string) {
+async function runPool<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.max(1, Math.min(limit, items.length || 1)) }, async () => {
+    while (true) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index]);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
+function routerStatus(source: LiveSource, phase: RouterPhase, message: string): SourceSearchStatus {
+  return decorateRouterStatus(source, {
+    id: source.id,
+    name: source.name,
+    state: "not-run",
+    offerCount: 0,
+    durationMs: 0,
+    message,
+    tier: source.tier,
+  }, phase);
+}
+
+export async function searchUkraineLive(query: string, mode: LiveMode = "stores") {
+  const relevant = automaticLiveSources.filter(source => mode === "all" || (mode === "private" ? source.sellerType === "private" : source.sellerType === "store"));
   if (process.env.SMARTBUY_LIVE_FETCH_ENABLED === "false") {
-    return { offers: [] as Offer[], statuses: automaticLiveSources.map(s => ({ id: s.id, name: s.name, state: "not-run" as const, offerCount: 0, durationMs: 0, message: "live fetch вимкнено" })) };
+    return {
+      offers: [] as Offer[],
+      statuses: relevant.map(source => routerStatus(source, "not-selected", "live fetch вимкнено")),
+    };
   }
-  const settled = await Promise.all(automaticLiveSources.map(source => searchSource(source, query)));
-  return { offers: settled.flatMap(x => x.offers), statuses: settled.map(x => x.status) };
+
+  const stable = rankSources(relevant.filter(source => source.tier === "stable"), query);
+  const allProbes = rankSources(relevant.filter(source => source.tier === "probe"), query);
+  const probesEnabled = process.env.SMARTBUY_EXPERIMENTAL_SOURCES !== "false";
+  const defaultProbeLimit = mode === "private" ? 2 : mode === "all" ? 10 : 9;
+  const probeLimit = Math.max(0, Math.min(Number(process.env.SMARTBUY_MAX_PROBE_SOURCES || defaultProbeLimit), allProbes.length));
+  const coolingProbes = probesEnabled ? allProbes.filter(source => isCoolingDown(source)) : [];
+  const eligibleProbes = probesEnabled ? allProbes.filter(source => !isCoolingDown(source)) : [];
+
+  const configuredPrimary = Number(process.env.SMARTBUY_ROUTER_PRIMARY_PROBES || (mode === "private" ? 2 : mode === "all" ? 4 : 3));
+  const primaryProbeBudget = Math.max(0, Math.min(configuredPrimary, probeLimit));
+
+  let primaryProbes: LiveSource[] = [];
+  if (mode === "private") {
+    primaryProbes = eligibleProbes.slice(0, primaryProbeBudget);
+  } else if (mode === "all") {
+    const privateFirst = eligibleProbes.filter(source => source.sellerType === "private").slice(0, 2);
+    const stores = eligibleProbes.filter(source => source.sellerType === "store");
+    const remainingSlots = Math.max(0, primaryProbeBudget - privateFirst.length);
+    primaryProbes = [...privateFirst, ...stores.slice(0, remainingSlots)];
+  } else {
+    primaryProbes = eligibleProbes.filter(source => source.sellerType === "store").slice(0, primaryProbeBudget);
+  }
+
+  const primarySources = [...stable, ...primaryProbes];
+  const concurrency = Math.max(1, Math.min(Number(process.env.SMARTBUY_SOURCE_CONCURRENCY || 4), 6));
+  const primaryResults = await runPool(primarySources, concurrency, source => searchSource(source, query, "primary"));
+  const primaryOfferCount = primaryResults.reduce((sum, item) => sum + item.offers.length, 0);
+
+  const defaultTarget = mode === "private" ? 4 : 8;
+  const targetOffers = Math.max(1, Math.min(Number(process.env.SMARTBUY_ROUTER_TARGET_OFFERS || defaultTarget), 30));
+  const remainingProbeBudget = Math.max(0, probeLimit - primaryProbes.length);
+  const usedProbeIds = new Set(primaryProbes.map(source => source.id));
+  const expansionCandidates = eligibleProbes.filter(source => !usedProbeIds.has(source.id));
+  const shouldExpand = probesEnabled && primaryOfferCount < targetOffers && remainingProbeBudget > 0;
+  const expansionSources = shouldExpand ? expansionCandidates.slice(0, remainingProbeBudget) : [];
+  const expandedResults = expansionSources.length
+    ? await runPool(expansionSources, concurrency, source => searchSource(source, query, "expanded"))
+    : [];
+
+  const settled = [...primaryResults, ...expandedResults];
+  const byId = new Map(settled.map(item => [item.status.id, item]));
+  const coolingIds = new Set(coolingProbes.map(source => source.id));
+  const eligibleIds = new Set(eligibleProbes.map(source => source.id));
+  const enoughAfterPrimary = primaryOfferCount >= targetOffers;
+
+  const statuses: SourceSearchStatus[] = relevant.map(source => {
+    const found = byId.get(source.id);
+    if (found) return found.status;
+    if (!probesEnabled && source.tier === "probe") return routerStatus(source, "not-selected", "пробні джерела вимкнені");
+    if (coolingIds.has(source.id)) return routerStatus(source, "cooldown", routerCooldownMessage(source) || "адаптивна пауза після нестабільних відповідей");
+    if (source.tier === "probe" && eligibleIds.has(source.id)) {
+      if (enoughAfterPrimary) return routerStatus(source, "not-selected", `адаптивний роутер: уже є ${primaryOfferCount} релевантних пропозицій`);
+      if (probeLimit <= primaryProbes.length + expansionSources.length) return routerStatus(source, "not-selected", "не потрапило в ліміт пробної хвилі");
+      return routerStatus(source, "not-selected", "не знадобилось у цій хвилі");
+    }
+    return routerStatus(source, "not-selected", "не запускалось");
+  });
+
+  return { offers: settled.flatMap(item => item.offers), statuses };
 }
 
-function normalizedTitle(title: string) { return titleTokens(title).slice(0, 12).join(" "); }
-function groupSimilarity(a: string, b: string) { const ab = evaluateTitleMatch(normalizedTitle(a), normalizedTitle(b)); const ba = evaluateTitleMatch(normalizedTitle(b), normalizedTitle(a)); return { score: Math.min(ab.score, ba.score), reliable: ab.reliable && ba.reliable }; }
+
+function normalizedOfferUrl(value?: string) {
+  if (!value) return "";
+  try {
+    const url = new URL(value);
+    return `${url.hostname.toLowerCase()}${url.pathname.replace(/\/$/, "")}`;
+  } catch {
+    return value.split(/[?#]/)[0].replace(/\/$/, "").toLowerCase();
+  }
+}
+
+function offerFingerprint(offer: Offer) {
+  const source = (offer.marketplace || offer.source || offer.store || "source").toLowerCase().trim();
+  const title = normalizedTitle(offer.title || "");
+  // Keep strong model identity in the fingerprint so a store page that reuses one URL
+  // for multiple memory/variant options does not collapse those options into one offer.
+  const identity = productIdentityKey(offer.title || "") || title;
+  if (offer.externalId) return `${source}|id:${String(offer.externalId).trim().toLowerCase()}|${identity}`;
+  const url = normalizedOfferUrl(offer.url);
+  if (url) return `${source}|url:${url}|${identity}`;
+  const seller = (offer.sellerName || offer.store || "seller").toLowerCase().replace(/\s+/g, " ").trim();
+  return `${source}|fallback:${seller}|${identity}|${Math.round(offer.price)}|${offer.condition}`;
+}
+
+function mergeDuplicateOffer(base: Offer, next: Offer): Offer {
+  const preferred = (next.matchConfidence || 0) > (base.matchConfidence || 0) ? next : base;
+  const secondary = preferred === next ? base : next;
+  const reviewSnippets = [...new Set([...(preferred.reviewSnippets || []), ...(secondary.reviewSnippets || [])])].slice(0, 8);
+  return {
+    ...secondary,
+    ...preferred,
+    price: Math.min(base.price, next.price),
+    title: preferred.title || secondary.title,
+    url: preferred.url || secondary.url,
+    imageUrl: preferred.imageUrl || secondary.imageUrl,
+    productRating: preferred.productRating || secondary.productRating,
+    productReviewCount: Math.max(preferred.productReviewCount || 0, secondary.productReviewCount || 0) || undefined,
+    reviewSnippets: reviewSnippets.length ? reviewSnippets : undefined,
+    trusted: Boolean(base.trusted || next.trusted),
+    verifiedSeller: Boolean(base.verifiedSeller || next.verifiedSeller),
+    matchConfidence: Math.max(base.matchConfidence || 0, next.matchConfidence || 0) || undefined,
+    matchConflicts: [...new Set([...(base.matchConflicts || []), ...(next.matchConflicts || [])])],
+  };
+}
+
+export function dedupeLiveOffers(offers: Offer[]) {
+  const map = new Map<string, Offer>();
+  for (const offer of offers) {
+    const key = offerFingerprint(offer);
+    const current = map.get(key);
+    map.set(key, current ? mergeDuplicateOffer(current, offer) : offer);
+  }
+  return { offers: [...map.values()], removed: Math.max(0, offers.length - map.size) };
+}
+
+function normalizedTitle(title: string) { return titleTokens(title).slice(0, 14).join(" "); }
+function groupSimilarity(a: string, b: string) {
+  const ab = evaluateTitleMatch(normalizedTitle(a), normalizedTitle(b));
+  const ba = evaluateTitleMatch(normalizedTitle(b), normalizedTitle(a));
+  return { score: Math.min(ab.score, ba.score), reliable: ab.reliable && ba.reliable };
+}
 function productEmoji(category: string) {
   if (category === "Смартфони") return "📱";
   if (category === "Ноутбуки") return "💻";
@@ -351,18 +730,49 @@ function canonicalTitle(offers: Offer[], query = "") {
 }
 function makeId(title: string) { return `${slug(title).slice(0,60) || "product"}-${Math.abs(hash(title)).toString(36)}`; }
 
-export function groupLiveOffers(offers: Offer[], query: string): Product[] {
+export function groupLiveOffers(offers: Offer[], query: string, alreadyDeduped = false): Product[] {
+  const unique = alreadyDeduped ? offers : dedupeLiveOffers(offers).offers;
   const groups: Offer[][] = [];
-  const ordered = [...offers].sort((a, b) => (b.matchConfidence || 0) - (a.matchConfidence || 0) || (a.title || "").localeCompare(b.title || ""));
+  const ordered = [...unique].sort((a, b) => (b.matchConfidence || 0) - (a.matchConfidence || 0) || (a.title || "").localeCompare(b.title || ""));
+
+  function compatibleWithGroup(title: string, group: Offer[]) {
+    const representative = canonicalTitle(group, query);
+    const candidateIdentity = productIdentityKey(title);
+    const representativeIdentity = productIdentityKey(representative);
+    if (candidateIdentity && representativeIdentity && candidateIdentity !== representativeIdentity) return { ok: false, score: 0 };
+    if (candidateIdentity && representativeIdentity && candidateIdentity === representativeIdentity) return { ok: true, score: 1 };
+
+    const main = groupSimilarity(title, representative);
+    if (!main.reliable) return { ok: false, score: main.score };
+
+    // Guard against a vague representative accidentally bridging two different strong models.
+    const sample = group.slice(0, 4);
+    let score = main.score;
+    for (const member of sample) {
+      const memberTitle = member.title || "";
+      const memberIdentity = productIdentityKey(memberTitle);
+      if (candidateIdentity && memberIdentity && candidateIdentity !== memberIdentity) return { ok: false, score: 0 };
+      const pair = evaluateTitleMatch(title, memberTitle);
+      if (pair.conflicts.some(conflict => ["brand", "model", "storage", "ram", "variant", "generation", "accessory", "counterfeit"].includes(conflict))) {
+        return { ok: false, score: 0 };
+      }
+      if (pair.reliable) score = Math.min(score, pair.score);
+    }
+    return { ok: score >= 0.72, score };
+  }
 
   for (const offer of ordered) {
     const title = offer.title || "";
     let bestIndex = -1, bestScore = 0;
     for (let i = 0; i < groups.length; i++) {
-      const match = groupSimilarity(title, canonicalTitle(groups[i], query));
-      if (match.reliable && match.score > bestScore) { bestScore = match.score; bestIndex = i; }
+      const compatibility = compatibleWithGroup(title, groups[i]);
+      if (compatibility.ok && compatibility.score > bestScore) {
+        bestScore = compatibility.score;
+        bestIndex = i;
+        if (bestScore >= 0.999) break;
+      }
     }
-    if (bestIndex >= 0 && bestScore >= 0.70) groups[bestIndex].push(offer); else groups.push([offer]);
+    if (bestIndex >= 0 && bestScore >= 0.72) groups[bestIndex].push(offer); else groups.push([offer]);
   }
 
   return groups.map(group => {
@@ -378,6 +788,7 @@ export function groupLiveOffers(offers: Offer[], query: string): Product[] {
     const anomalies = flagged.filter(o => o.priceAnomaly).sort((a, b) => a.price - b.price);
     const sorted = [...sane, ...anomalies];
     const title = canonicalTitle(sane.length ? sane : flagged, query);
+    const identity = productIdentityMeta(title);
     const prices = (sane.length ? sane : flagged).map(o => o.price);
     const sources = new Set(sorted.map(o => o.marketplace));
     const newOffers = sorted.filter(o => o.condition === "new" && !o.priceAnomaly);
@@ -396,27 +807,50 @@ export function groupLiveOffers(offers: Offer[], query: string): Product[] {
     const bestSource = bestOffer?.marketplace || "джерело";
     const averageConfidence = Math.round(sorted.reduce((sum, offer) => sum + (offer.matchConfidence || 0), 0) / Math.max(1, sorted.length));
 
+    const uniqueTitles = [...new Set(sorted.map(item => (item.title || "").trim()).filter(Boolean))];
+    const groupScores = uniqueTitles.map(candidate => evaluateTitleMatch(title, candidate).score).filter(Number.isFinite);
+    let groupingConfidence = groupScores.length ? Math.round((groupScores.reduce((sum, score) => sum + score, 0) / groupScores.length) * 100) : 100;
+    if (identity.key && uniqueTitles.every(candidate => productIdentityKey(candidate) === identity.key)) groupingConfidence = Math.max(groupingConfidence, 96);
+    groupingConfidence = Math.max(0, Math.min(100, groupingConfidence));
+    const mergeSignals = identity.signals.length ? identity.signals : ["назва"];
+
     const highlights = [
       `${sorted.length} проп. · ${sources.size} джерел`,
       `збіг моделі ${Math.max(averageConfidence, Math.round(match.score * 100))}%`,
+      uniqueTitles.length > 1 ? `об’єднано ${uniqueTitles.length} назв · ${groupingConfidence}%` : `групування ${groupingConfidence}%`,
       prices.length > 1 ? `діапазон ${minPrice.toLocaleString("uk-UA")}–${maxPrice.toLocaleString("uk-UA")} ₴` : `${prices[0].toLocaleString("uk-UA")} ₴`,
     ];
 
     let summary = saving
       ? `Найнижча підтверджена ціна — ${bestOffer.price.toLocaleString("uk-UA")} ₴ у ${bestSource}. Б/в стартує приблизно на ${saving}% дешевше за найнижчу нову пропозицію. Медіанна ціна — ${med.toLocaleString("uk-UA")} ₴.`
       : `Найнижча підтверджена ціна — ${bestOffer.price.toLocaleString("uk-UA")} ₴ у ${bestSource}. Медіанна ціна серед ${prices.length} релевантних пропозицій — ${med.toLocaleString("uk-UA")} ₴.`;
+    if (uniqueTitles.length > 1) summary += ` SmartBuy об’єднав ${uniqueTitles.length} варіанти назви за сигналами: ${mergeSignals.join(", ")}.`;
     if (sources.size === 1) summary += " Поки є лише одне автоматичне джерело, тому висновок попередній.";
     else if (spread >= 20) summary += ` Розкид цін ${spread}%, тому варто звірити комплектацію та умови продавця.`;
     if (anomalyCount) summary += ` SmartBuy відсунув ${anomalyCount} підозріло дешев${anomalyCount === 1 ? "у/дорогу пропозицію" : "і/дорогі пропозиції"} з розрахунку найкращої ціни.`;
 
+    const ratingBySource = new Map<string, { rating: number; count: number }>();
+    for (const offer of sorted) {
+      if (!offer.productRating) continue;
+      const count = offer.productReviewCount || 0;
+      const current = ratingBySource.get(offer.marketplace);
+      if (!current || count > current.count) ratingBySource.set(offer.marketplace, { rating: offer.productRating, count });
+    }
+    const ratingEntries = [...ratingBySource.values()];
+    const totalReviewCount = ratingEntries.reduce((sum, item) => sum + item.count, 0);
+    const aggregateRating = ratingEntries.length
+      ? Math.round((ratingEntries.reduce((sum, item) => sum + item.rating * (item.count || 1), 0) / ratingEntries.reduce((sum, item) => sum + (item.count || 1), 0)) * 10) / 10
+      : 0;
+
     const cautions: string[] = [];
     if (usedOffers.length) cautions.push("Для приватних оголошень перевіряй стан товару, продавця та умови безпечної оплати.");
     if (anomalyCount) cautions.push(`${anomalyCount} цінов${anomalyCount === 1 ? "а аномалія" : "і аномалії"} не впливають на рекомендовану найнижчу ціну.`);
+    if (groupingConfidence < 78) cautions.push("Групування назв має середню впевненість — перед покупкою звір точну модифікацію в кожній пропозиції.");
 
     return {
-      id: makeId(title), title, category,
+      id: makeId(identity.key || title), title, category,
       subtitle: `${sources.size} джерел · ${sorted.length} пропозицій`,
-      rating: 0, reviewCount: 0,
+      rating: aggregateRating, reviewCount: totalReviewCount,
       image: productEmoji(category), imageUrl: sorted.find(o => o.imageUrl)?.imageUrl,
       bestPrice: bestOffer.price,
       score: Math.min(99, 70 + Math.min(sources.size, 5) * 4 + Math.round(match.score * 12) + Math.min(sorted.filter(o => o.trusted).length, 3) * 2),
@@ -426,6 +860,13 @@ export function groupLiveOffers(offers: Offer[], query: string): Product[] {
       offers: sorted,
       source: [...sources].slice(0, 3).join(" · ") + (sources.size > 3 ? ` +${sources.size - 3}` : ""),
       productUrl: bestOffer?.url,
+      grouping: {
+        identityKey: identity.key || undefined,
+        canonicalLabel: identity.label,
+        confidence: groupingConfidence,
+        mergeSignals,
+        uniqueTitleCount: uniqueTitles.length,
+      },
     } satisfies Product;
   }).sort((a, b) => b.offers.length - a.offers.length || a.bestPrice - b.bestPrice);
 }

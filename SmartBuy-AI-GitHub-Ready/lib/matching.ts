@@ -55,8 +55,8 @@ function replaceAliases(value: string) {
 function canonical(value: string) {
   return replaceAliases(value)
     .replace(/([a-zа-яіїєґ0-9])\+/gi, "$1 plus")
-    .replace(/(\d+(?:[.,]\d+)?)\s*(?:гб|gb)\b/gi, "$1gb")
-    .replace(/(\d+(?:[.,]\d+)?)\s*(?:тб|tb)\b/gi, "$1tb")
+    .replace(/(\d+(?:[.,]\d+)?)\s*(?:гб|gb)(?=$|[^a-zа-яіїєґ0-9])/gi, "$1gb")
+    .replace(/(\d+(?:[.,]\d+)?)\s*(?:тб|tb)(?=$|[^a-zа-яіїєґ0-9])/gi, "$1tb")
     .replace(/(\d+)\s*\/\s*(\d+)\s*(?:gb|гб)?\b/gi, "$1/$2gb")
     .replace(/[^a-zа-яіїєґ0-9+./-]+/gi, " ")
     .replace(/\s+/g, " ")
@@ -256,4 +256,71 @@ export function bestProductMatch(reference: Product, candidates: Product[]) {
     }
   }
   return best && bestMatch.reliable ? { product: best, match: bestMatch } : null;
+}
+
+// v2.4: a conservative identity key used only for grouping already-relevant offers.
+// It intentionally returns null for vague titles, so SmartBuy does not merge unrelated products just because names look similar.
+export function productIdentityKey(value: string): string | null {
+  const brands = [...brandTokens(value)].sort();
+  const families = [...familySignals(value)].sort();
+  const capacities = [...capacityTokens(value)].filter(token => !token.startsWith("ram:")).sort();
+  const variants = [...variantTokens(value)].sort();
+  if (!families.length && !capacities.length && !variants.length) return null;
+  return [brands.join(",") || "_", families.join(",") || "_", capacities.join(",") || "_", variants.join(",") || "_"].join("|");
+}
+
+// v3.4: conservative normalization for the query sent to automatic sources.
+// It fixes formatting/aliases and removes only shopping-intent noise; model tokens stay intact.
+const QUERY_NOISE = new Set([
+  "купити", "ціна", "ціни", "вартість", "дешево", "дешевше", "кращий", "краща", "найкращий", "найкраща",
+  "україна", "україні", "ua", "грн", "uah", "новий", "нова", "нове", "нові", "бв", "бу", "вживаний", "вживана",
+]);
+
+export function normalizeSearchQuery(value: string) {
+  const prepared = value
+    .replace(/\bi[\s-]*phone\b/gi, "iphone")
+    .replace(/\bpro[\s-]*max\b/gi, "pro max")
+    .replace(/\btype[\s-]*c\b/gi, "type c");
+  const normalized = canonical(prepared)
+    .split(/\s+/)
+    .filter(token => token && !QUERY_NOISE.has(token))
+    .join(" ")
+    .trim();
+  return normalized || canonical(prepared);
+}
+
+export type ProductIdentityMeta = {
+  key: string | null;
+  label: string;
+  signals: string[];
+  hasStrongIdentity: boolean;
+};
+
+function readableSignal(signal: string) {
+  if (signal.startsWith("iphone:")) return `iPhone ${signal.slice(7)}`;
+  if (signal.startsWith("galaxy:")) return `Galaxy ${signal.slice(7).toUpperCase()}`;
+  if (signal.startsWith("model:")) return signal.slice(6).toUpperCase();
+  if (signal.startsWith("ram:")) return `RAM ${signal.slice(4).toUpperCase()}`;
+  if (/^\d+gb$/.test(signal)) return signal.toUpperCase();
+  return signal.replace(":", " ");
+}
+
+export function productIdentityMeta(value: string): ProductIdentityMeta {
+  const brands = [...brandTokens(value)].sort();
+  const families = [...familySignals(value)].sort();
+  const capacities = [...capacityTokens(value)].filter(token => !token.startsWith("ram:")).sort();
+  const variants = [...variantTokens(value)].sort();
+  const displayBrands = families.some(item => item.startsWith("iphone:")) && brands.includes("apple") ? brands.filter(item => item !== "iphone") : brands;
+  const signals: string[] = [];
+  if (brands.length) signals.push("бренд");
+  if (families.length) signals.push("модель");
+  if (variants.length) signals.push("версія");
+  if (capacities.length) signals.push("пам’ять");
+  const parts = [...displayBrands, ...families, ...variants, ...capacities].map(readableSignal);
+  return {
+    key: productIdentityKey(value),
+    label: parts.join(" · ") || titleTokens(value).slice(0, 6).join(" ") || "товар",
+    signals,
+    hasStrongIdentity: families.length > 0 || capacities.length > 0 || variants.length > 0,
+  };
 }

@@ -19,6 +19,7 @@ export async function GET(request: NextRequest) {
   const scope = allowedScopes.includes(rawScope) ? rawScope : "all";
   const condition = allowedConditions.includes(rawCondition) ? rawCondition : "all";
 
-  const result = await searchProducts(q, category, maxPrice, scope, condition);
+  const smart = request.nextUrl.searchParams.get("smart") === "1";
+  const result = await searchProducts(q, category, maxPrice, scope, condition, smart);
   return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
 }

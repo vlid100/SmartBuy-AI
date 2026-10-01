@@ -1,12 +1,14 @@
 {
   "name": "smartbuy-ai",
-  "version": "1.5.0",
+  "version": "4.0.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node scripts/smoke-check.mjs && next build",
     "start": "next start",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "check": "tsc --noEmit",
+    "smoke": "node scripts/smoke-check.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",
