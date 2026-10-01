@@ -36,16 +36,16 @@ function baseCapabilities(access: SourceAccess, kind: SellerType | "aggregator")
 
   if (kind === "international") {
     return {
-      automaticSearch: none,
+      automaticSearch: automatic,
       directSearch,
       assistedImport,
       privateListings: none,
-      productSpecs: manual,
-      ratings: manual,
-      reviewSignals: manual,
-      deliveryInfo: manual,
+      productSpecs: partial,
+      ratings: partial,
+      reviewSignals: partial,
+      deliveryInfo: partial,
       warrantyInfo: manual,
-      sellerSignals: manual,
+      sellerSignals: partial,
       internationalCost: full,
     };
   }
@@ -90,9 +90,9 @@ const overrides: Record<string, Partial<SourceCapabilities>> = {
   ekatalog: { productSpecs: partial, deliveryInfo: partial, warrantyInfo: partial, sellerSignals: partial },
   olx: { privateListings: full, deliveryInfo: partial, sellerSignals: partial, warrantyInfo: manual },
   shafa: { privateListings: full, deliveryInfo: partial, sellerSignals: partial, warrantyInfo: manual },
-  aliexpress: { internationalCost: full, productSpecs: manual, ratings: manual, reviewSignals: manual, deliveryInfo: manual, sellerSignals: manual },
-  temu: { internationalCost: full, productSpecs: manual, ratings: manual, reviewSignals: manual, deliveryInfo: manual, sellerSignals: manual },
-  amazon: { internationalCost: full, productSpecs: manual, ratings: manual, reviewSignals: manual, deliveryInfo: manual, sellerSignals: manual },
+  aliexpress: { automaticSearch: partial, internationalCost: full, productSpecs: partial, ratings: partial, reviewSignals: partial, deliveryInfo: partial, sellerSignals: partial },
+  temu: { automaticSearch: partial, internationalCost: full, productSpecs: partial, ratings: partial, reviewSignals: partial, deliveryInfo: partial, sellerSignals: partial },
+  amazon: { automaticSearch: partial, internationalCost: full, productSpecs: partial, ratings: partial, reviewSignals: partial, deliveryInfo: partial, sellerSignals: partial },
 };
 
 export function sourceConnectorProfile(id: string, access: SourceAccess, kind: SellerType | "aggregator"): SourceConnectorProfile {
@@ -103,7 +103,7 @@ export function sourceConnectorProfile(id: string, access: SourceAccess, kind: S
   if (access === "probe") notes.push("best-effort public page parsing; may be blocked by anti-bot protection");
   if (access === "direct") notes.push("direct-search connector; SmartBuy does not claim automatic live extraction");
   if (kind === "private") notes.push("private-listing signals are treated separately from store trust");
-  if (kind === "international") notes.push("final cost is normalized through the manual/assisted total-cost workflow");
+  if (kind === "international") notes.push("best-effort live public-page parsing + assisted import; final cost can still be refined in the total-cost workflow");
   return { adapter, capabilities, notes };
 }
 

@@ -2,7 +2,7 @@ import * as cheerio from "cheerio";
 import type { ListingCondition, Offer, Product, SourceCapabilities, SourceSearchStatus } from "@/lib/types";
 import { liveSourceIds, probeSourceIds } from "@/lib/source-registry";
 import { sourceConnectorProfile, type ConnectorAdapterKind } from "@/lib/source-capabilities";
-import { evaluateTitleMatch, productIdentityKey, productIdentityMeta } from "@/lib/matching";
+import { evaluateTitleMatch, productIdentityKey, productIdentityMeta, productVariantSignals } from "@/lib/matching";
 import { expandSearchQuery } from "@/lib/query-expansion";
 import { decorateRouterStatus, isCoolingDown, rankSources, recordAndDecorateRouterStatus, routerCooldownMessage, type RouterPhase } from "@/lib/source-router";
 
@@ -13,6 +13,7 @@ export type LiveSource = {
   trusted: boolean;
   tier: "stable" | "probe";
   buildUrl: (query: string) => string;
+  buildUrls?: (query: string) => string[];
   selectors?: {
     card: string;
     title: string;
@@ -37,11 +38,13 @@ const rawLiveSources: LiveSource[] = [
   {
     id: "olx", name: "OLX", sellerType: "private", trusted: false, tier: tierFor("olx"),
     buildUrl: q => `https://www.olx.ua/uk/list/q-${slug(q)}/`,
+    buildUrls: q => [`https://www.olx.ua/uk/list/q-${slug(q)}/`, `https://www.olx.ua/uk/list/?q=${enc(q)}`],
     selectors: { card: '[data-cy="l-card"], [data-testid="l-card"], article', title: 'h4, h6, [data-cy="ad-card-title"], [data-testid="ad-title"]', price: '[data-testid="ad-price"], p:contains("грн")', link: 'a[href]', image: 'img', meta: '[data-testid="location-date"]' }
   },
   {
     id: "rozetka", name: "Rozetka", sellerType: "store", trusted: true, tier: tierFor("rozetka"),
     buildUrl: q => `https://rozetka.com.ua/ua/search/?text=${enc(q)}`,
+    buildUrls: q => [`https://rozetka.com.ua/ua/search/?text=${enc(q)}`, `https://rozetka.com.ua/ua/search/?text=${enc(q)}&page=1`],
     selectors: { card: 'rz-catalog-tile, .goods-tile, [class*="catalog-grid"] li', title: '.goods-tile__title, .goods-tile__heading, [class*="title"]', price: '.goods-tile__price-value, .goods-tile__price, [class*="price"]', link: 'a.goods-tile__heading, a[href]', image: 'img' }
   },
   {
@@ -135,7 +138,7 @@ export const stableLiveSources = liveSources.filter(source => liveSourceIds.has(
 export const probeLiveSources = liveSources.filter(source => probeSourceIds.has(source.id));
 export const automaticLiveSources = [...stableLiveSources, ...probeLiveSources];
 
-const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 SmartBuyAI/4.0";
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 SmartBuyAI/5.0";
 const PRICE_RE = /(?:₴|грн\.?|uah)?\s*([0-9][0-9\s\u00a0.,]{1,14})\s*(?:₴|грн\.?|uah)?/i;
 const BLOCK_PATTERNS = /captcha|cf-chl-|attention required[^<]{0,80}cloudflare|access denied|verify you are human|перевірте, що ви людина|доступ заборонено|unusual traffic|robot check/i;
 const STOP = new Set(["купити","ціна","ціни","новий","нова","нове","бв","б/в","бу","україна","україні","доставка","товар","смартфон","ноутбук","телефон","оригінал"]);
@@ -185,6 +188,36 @@ function reviewSnippetsFrom(obj: Record<string, unknown>) {
   return out;
 }
 
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+function availabilityLabel(value: unknown) {
+  const raw = cleanText(String(value || ""));
+  if (!raw) return undefined;
+  if (/instock|in stock|наяв|в наличии/i.test(raw)) return "є в наявності";
+  if (/outofstock|out of stock|немає|нет в наличии/i.test(raw)) return "немає в наявності";
+  if (/preorder|pre-order|передзамов/i.test(raw)) return "передзамовлення";
+  return raw.replace(/^https?:\/\/schema\.org\//i, "").slice(0, 100);
+}
+function returnPolicyLabel(value: unknown) {
+  const obj = objectValue(value);
+  if (!obj) return cleanText(String(value || "")).slice(0, 140) || undefined;
+  const days = parseCount(valueAt(obj, ["merchantReturnDays", "returnDays"]));
+  const category = cleanText(String(valueAt(obj, ["returnPolicyCategory", "returnMethod"]) || "")).replace(/^https?:\/\/schema\.org\//i, "");
+  return [days ? `${days} дн.` : "", category].filter(Boolean).join(" · ") || undefined;
+}
+function shippingLabel(value: unknown) {
+  const obj = objectValue(Array.isArray(value) ? value[0] : value);
+  if (!obj) return undefined;
+  const rate = objectValue(obj.shippingRate) || {};
+  const amount = valueAt(rate, ["value", "price", "amount"]);
+  const currency = cleanText(String(valueAt(rate, ["currency", "priceCurrency"]) || ""));
+  const destination = objectValue(obj.shippingDestination) || {};
+  const country = cleanText(String(valueAt(destination, ["addressCountry", "name"]) || ""));
+  const pieces = [amount != null ? `${amount}${currency ? ` ${currency}` : ""}` : "", country ? `до ${country}` : ""].filter(Boolean);
+  return pieces.length ? `доставка ${pieces.join(" · ")}` : undefined;
+}
+
 function absoluteUrl(url: string | undefined, base: string) {
   if (!url) return undefined;
   try { return new URL(url, base).toString(); } catch { return undefined; }
@@ -224,7 +257,7 @@ function usefulTitle(title: string, query: string) {
   return match.reliable || similarity(t, q) >= 0.36;
 }
 
-function offerFrom(source: LiveSource, baseUrl: string, input: { title?: string; price?: unknown; url?: string; image?: unknown; meta?: string; externalId?: string; productRating?: unknown; reviewCount?: unknown; reviewSnippets?: string[] }): Offer | null {
+function offerFrom(source: LiveSource, baseUrl: string, input: { title?: string; price?: unknown; url?: string; image?: unknown; meta?: string; externalId?: string; productRating?: unknown; reviewCount?: unknown; reviewSnippets?: string[]; sellerName?: unknown; sellerRating?: unknown; sellerReviewCount?: unknown; sellerSince?: unknown; returnPolicy?: unknown; availability?: unknown; delivery?: unknown; warranty?: unknown; verifiedSeller?: unknown; sku?: unknown; color?: unknown; regionVersion?: unknown }): Offer | null {
   const title = cleanText(input.title);
   const price = parsePrice(input.price as string | number | null);
   const url = absoluteUrl(input.url, baseUrl);
@@ -235,14 +268,15 @@ function offerFrom(source: LiveSource, baseUrl: string, input: { title?: string;
     title,
     store: source.name,
     marketplace: source.name,
-    sellerName: source.sellerType === "private" ? "продавець" : source.name,
+    sellerName: cleanText(String(input.sellerName || "")) || (source.sellerType === "private" ? "продавець" : source.name),
     sellerType: source.sellerType,
     condition: conditionFrom(title, source),
     price,
     currency: "UAH",
-    delivery: source.sellerType === "private" ? "уточнити в оголошенні" : "дивись на сайті",
-    warranty: source.sellerType === "private" ? "уточнити" : "дивись на сайті",
+    delivery: cleanText(String(input.delivery || "")) || (source.sellerType === "private" ? "уточнити в оголошенні" : "дивись на сайті"),
+    warranty: cleanText(String(input.warranty || "")) || (source.sellerType === "private" ? "уточнити" : "дивись на сайті"),
     trusted: source.trusted,
+    verifiedSeller: Boolean(input.verifiedSeller),
     city: source.sellerType === "private" ? cleanText(input.meta) || undefined : undefined,
     url,
     imageUrl: absoluteUrl(imageFrom(input.image), baseUrl),
@@ -250,6 +284,14 @@ function offerFrom(source: LiveSource, baseUrl: string, input: { title?: string;
     productRating: parseRating(input.productRating),
     productReviewCount: parseCount(input.reviewCount),
     reviewSnippets: input.reviewSnippets?.filter(Boolean).slice(0, 6),
+    sellerRating: parseRating(input.sellerRating),
+    sellerReviewCount: parseCount(input.sellerReviewCount),
+    sellerSince: cleanText(String(input.sellerSince || "")) || undefined,
+    returnPolicy: cleanText(String(input.returnPolicy || "")) || undefined,
+    availability: cleanText(String(input.availability || "")) || undefined,
+    sku: cleanText(String(input.sku || "")) || productVariantSignals(title).skus[0],
+    color: cleanText(String(input.color || "")) || productVariantSignals(title).colors[0],
+    regionVersion: cleanText(String(input.regionVersion || "")) || productVariantSignals(title).regions[0],
   };
 }
 
@@ -316,6 +358,9 @@ function parseJsonCandidates(html: string, source: LiveSource, baseUrl: string):
     const url = shallowUrl(obj);
     if (typeof name === "string" && price !== undefined && url) {
       const aggregate = aggregateRatingFrom(obj);
+      const offersObj = objectValue(obj.offers) || obj;
+      const seller = objectValue(offersObj.seller) || objectValue(obj.seller) || {};
+      const sellerAggregate = aggregateRatingFrom(seller);
       const offer = offerFrom(source, baseUrl, {
         title: name, price, url,
         image: valueAt(obj, ["image", "imageUrl", "photo", "thumbnail", "picture"]),
@@ -323,6 +368,17 @@ function parseJsonCandidates(html: string, source: LiveSource, baseUrl: string):
         productRating: aggregate.rating,
         reviewCount: aggregate.count,
         reviewSnippets: reviewSnippetsFrom(obj),
+        sellerName: valueAt(seller, ["name", "sellerName", "storeName"]),
+        sellerRating: sellerAggregate.rating,
+        sellerReviewCount: sellerAggregate.count,
+        sellerSince: valueAt(seller, ["foundingDate", "memberSince", "createdAt"]),
+        verifiedSeller: valueAt(seller, ["verified", "isVerified", "verifiedSeller"]),
+        availability: availabilityLabel(valueAt(offersObj, ["availability", "stockStatus"])),
+        delivery: shippingLabel(valueAt(offersObj, ["shippingDetails", "shipping"])),
+        returnPolicy: returnPolicyLabel(valueAt(offersObj, ["hasMerchantReturnPolicy", "merchantReturnPolicy"])),
+        sku: valueAt(obj, ["sku", "mpn", "model", "productId"]),
+        color: valueAt(obj, ["color"]),
+        regionVersion: valueAt(obj, ["region", "countryOfOrigin"]),
       });
       if (offer) results.push(offer);
     }
@@ -426,114 +482,126 @@ function writeCache(source: LiveSource, query: string, value: SourceResult, phas
   }
 }
 
+async function enrichPriorityOffer(source: LiveSource, offer: Offer): Promise<Offer> {
+  if (!offer.url || process.env.SMARTBUY_SELLER_ENRICH_ENABLED === "false") return offer;
+  try {
+    const response = await fetchWithTimeout(offer.url, Math.max(1200, Math.min(Number(process.env.SMARTBUY_SELLER_ENRICH_TIMEOUT_MS || 2200), 4000)));
+    if (!response.ok) return offer;
+    const html = await response.text();
+    if (BLOCK_PATTERNS.test(html.slice(0, 160_000))) return offer;
+    const structured = parseJsonCandidates(html, source, response.url || offer.url)
+      .filter(item => item.title && evaluateTitleMatch(offer.title || "", item.title).score >= 0.72)
+      .sort((a, b) => (b.sellerReviewCount || 0) - (a.sellerReviewCount || 0) || (b.productReviewCount || 0) - (a.productReviewCount || 0));
+    let enriched = structured[0] ? mergeDuplicateOffer(offer, structured[0]) : offer;
+    const $ = cheerio.load(html);
+    const body = cleanText($("body").text()).slice(0, 80_000);
+    const sellerSince = body.match(/(?:на olx з|на сайті з|продавець з|member since|seller since)\s*([^|•·]{3,50})/i)?.[1];
+    const sellerRating = body.match(/(?:рейтинг продавця|seller rating)\s*[:—-]?\s*([0-5](?:[.,]\d)?)/i)?.[1];
+    const sellerReviews = body.match(/(?:відгук(?:ів|и)? про продавця|seller reviews?)\s*[:—-]?\s*([0-9\s]+)/i)?.[1];
+    const returnMatch = body.match(/(?:повернення|return(?:s)?)(?: товару)?\s*[:—-]?\s*([^|•·]{3,100})/i)?.[1];
+    const deliveryMatch = body.match(/(OLX Доставка|Нова Пошта|Укрпошта|самовивіз|післяплата|оплата при отриманні)/i)?.[1];
+    return {
+      ...enriched,
+      sellerSince: enriched.sellerSince || cleanText(sellerSince),
+      sellerRating: enriched.sellerRating || parseRating(sellerRating),
+      sellerReviewCount: enriched.sellerReviewCount || parseCount(sellerReviews),
+      returnPolicy: enriched.returnPolicy || cleanText(returnMatch),
+      delivery: enriched.delivery && !/(уточн|дивись)/i.test(enriched.delivery) ? enriched.delivery : (deliveryMatch || enriched.delivery),
+    };
+  } catch { return offer; }
+}
+
+async function enrichPriorityOffers(source: LiveSource, offers: Offer[]) {
+  // Deeper page enrichment is intentionally small: it improves seller signals for the most
+  // useful OLX/Rozetka results without multiplying Vercel latency for every marketplace card.
+  if (!/^(olx|rozetka)$/i.test(source.id)) return offers;
+  const limit = Math.max(0, Math.min(Number(process.env.SMARTBUY_SELLER_ENRICH_LIMIT || 2), 4, offers.length));
+  const head = await Promise.all(offers.slice(0, limit).map(offer => enrichPriorityOffer(source, offer)));
+  return [...head, ...offers.slice(limit)];
+}
+
 export async function searchSource(source: LiveSource, query: string, phase: RouterPhase = "primary"): Promise<SourceResult> {
   const cached = readCache(source, query, phase);
   if (cached) return cached;
 
   const started = Date.now();
   const stableTimeout = Math.max(1800, Math.min(Number(process.env.SMARTBUY_SOURCE_TIMEOUT_MS || 4300), 9000));
-  const probeTimeout = Math.max(1200, Math.min(Number(process.env.SMARTBUY_PROBE_TIMEOUT_MS || 2400), 5000));
+  const probeTimeout = Math.max(1200, Math.min(Number(process.env.SMARTBUY_PROBE_TIMEOUT_MS || 2700), 5500));
   const timeoutMs = source.tier === "stable" ? stableTimeout : probeTimeout;
-  const maxAttempts = source.tier === "stable" ? 2 : 1;
+  const maxAttempts = source.tier === "stable" || /^(olx|rozetka)$/i.test(source.id) ? 2 : 1;
   const variants = expandSearchQuery(query, source.id);
   const planned = variants.length ? variants : [{ query, kind: "exact" as const, reason: "точний запит" }];
   let lastMessage = "невідома помилка";
+  let lastState: SourceSearchStatus["state"] = "empty";
   let networkAttempts = 0;
   let variantsTried = 0;
 
   for (let variantIndex = 0; variantIndex < planned.length; variantIndex++) {
     const variant = planned[variantIndex];
-    const url = source.buildUrl(variant.query);
     variantsTried += 1;
+    const urls = [...new Set((source.buildUrls ? source.buildUrls(variant.query) : [source.buildUrl(variant.query)]).filter(Boolean))];
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      networkAttempts += 1;
-      try {
-        const response = await fetchWithTimeout(url, timeoutMs);
-        const durationMs = Date.now() - started;
-        if (response.status === 403 || response.status === 401 || response.status === 429) {
-          const result: SourceResult = { offers: [], status: {
-            id: source.id, name: source.name, state: "blocked", offerCount: 0, durationMs,
-            message: `HTTP ${response.status}`, tier: source.tier, attempts: networkAttempts,
-            queryUsed: variant.query, queryVariantsTried: variantsTried, queryExpanded: variantIndex > 0,
-          } };
-          writeCache(source, query, result, phase); return result;
+    for (let urlIndex = 0; urlIndex < urls.length; urlIndex++) {
+      const url = urls[urlIndex];
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        networkAttempts += 1;
+        try {
+          const response = await fetchWithTimeout(url, timeoutMs);
+          const durationMs = Date.now() - started;
+          if (response.status === 403 || response.status === 401 || response.status === 429) {
+            lastState = "blocked"; lastMessage = `HTTP ${response.status}`;
+            // OLX/Rozetka expose more than one public search URL; try the alternative before reporting blocked.
+            break;
+          }
+          if (!response.ok) {
+            lastState = "error"; lastMessage = `HTTP ${response.status}`;
+            if (response.status >= 500 && attempt < maxAttempts) continue;
+            break;
+          }
+          const contentType = response.headers.get("content-type") || "";
+          if (!contentType.includes("text/html") && !contentType.includes("application/xhtml") && !contentType.includes("json")) {
+            lastState = "empty"; lastMessage = "не HTML/JSON"; break;
+          }
+          const html = await response.text();
+          if (BLOCK_PATTERNS.test(html.slice(0, 180_000))) {
+            lastState = "blocked"; lastMessage = "антибот / captcha"; break;
+          }
+          const parsed = [
+            ...parseCards(html, source, response.url || url),
+            ...parseJsonCandidates(html, source, response.url || url),
+            ...parseGenericAnchors(html, source, response.url || url),
+          ];
+          let offers = dedupeOffers(parsed, query, Number(process.env.SMARTBUY_MAX_PER_SOURCE || 12));
+          if (offers.length) {
+            offers = await enrichPriorityOffers(source, offers);
+            const expanded = variantIndex > 0;
+            const result: SourceResult = {
+              offers,
+              status: {
+                id: source.id, name: source.name, state: "ok", offerCount: offers.length, durationMs: Date.now() - started,
+                message: [expanded ? `знайдено через варіант запиту: ${variant.query}` : "", urlIndex > 0 ? "резервний public URL" : ""].filter(Boolean).join(" · ") || undefined,
+                tier: source.tier, attempts: networkAttempts,
+                queryUsed: variant.query, queryVariantsTried: variantsTried, queryExpanded: expanded,
+              }
+            };
+            writeCache(source, query, result, phase); return result;
+          }
+          lastState = "empty"; lastMessage = "сторінка відповіла, але релевантні картки не розпізнані";
+          break;
+        } catch (error) {
+          lastMessage = error instanceof Error ? error.message : "невідома помилка";
+          lastState = /abort|timeout/i.test(lastMessage) ? "timeout" : "error";
+          if (attempt < maxAttempts) continue;
+          break;
         }
-        if (!response.ok) {
-          lastMessage = `HTTP ${response.status}`;
-          if (response.status >= 500 && attempt < maxAttempts) continue;
-          const result: SourceResult = { offers: [], status: {
-            id: source.id, name: source.name, state: "error", offerCount: 0, durationMs,
-            message: lastMessage, tier: source.tier, attempts: networkAttempts,
-            queryUsed: variant.query, queryVariantsTried: variantsTried, queryExpanded: variantIndex > 0,
-          } };
-          writeCache(source, query, result, phase); return result;
-        }
-        const contentType = response.headers.get("content-type") || "";
-        if (!contentType.includes("text/html") && !contentType.includes("application/xhtml") && !contentType.includes("json")) {
-          lastMessage = "не HTML/JSON";
-          // A different wording will not change the response format, so stop here.
-          const result: SourceResult = { offers: [], status: {
-            id: source.id, name: source.name, state: "empty", offerCount: 0, durationMs,
-            message: lastMessage, tier: source.tier, attempts: networkAttempts,
-            queryUsed: variant.query, queryVariantsTried: variantsTried, queryExpanded: variantIndex > 0,
-          } };
-          writeCache(source, query, result, phase); return result;
-        }
-        const html = await response.text();
-        if (BLOCK_PATTERNS.test(html.slice(0, 180_000))) {
-          const result: SourceResult = { offers: [], status: {
-            id: source.id, name: source.name, state: "blocked", offerCount: 0, durationMs,
-            message: "антибот / captcha", tier: source.tier, attempts: networkAttempts,
-            queryUsed: variant.query, queryVariantsTried: variantsTried, queryExpanded: variantIndex > 0,
-          } };
-          writeCache(source, query, result, phase); return result;
-        }
-        const parsed = [
-          ...parseCards(html, source, response.url || url),
-          ...parseJsonCandidates(html, source, response.url || url),
-          ...parseGenericAnchors(html, source, response.url || url),
-        ];
-        // Important: filter every expanded query against the ORIGINAL query, not the relaxed phrase.
-        // This is what prevents a wider marketplace search from mixing Pro/Pro Max, storage or model codes.
-        const offers = dedupeOffers(parsed, query, Number(process.env.SMARTBUY_MAX_PER_SOURCE || 12));
-        if (offers.length) {
-          const expanded = variantIndex > 0;
-          const result: SourceResult = {
-            offers,
-            status: {
-              id: source.id, name: source.name, state: "ok", offerCount: offers.length, durationMs,
-              message: expanded ? `знайдено через варіант запиту: ${variant.query}` : undefined,
-              tier: source.tier, attempts: networkAttempts,
-              queryUsed: variant.query, queryVariantsTried: variantsTried, queryExpanded: expanded,
-            }
-          };
-          writeCache(source, query, result, phase); return result;
-        }
-        lastMessage = "сторінка відповіла, але релевантні картки не розпізнані";
-        // Valid page but zero strict matches: only now try the next conservative query variant.
-        break;
-      } catch (error) {
-        lastMessage = error instanceof Error ? error.message : "невідома помилка";
-        if (attempt < maxAttempts) continue;
-        const durationMs = Date.now() - started;
-        const timeout = /abort|timeout/i.test(lastMessage);
-        const result: SourceResult = { offers: [], status: {
-          id: source.id, name: source.name, state: timeout ? "timeout" : "error", offerCount: 0, durationMs,
-          message: lastMessage, tier: source.tier, attempts: networkAttempts,
-          queryUsed: variant.query, queryVariantsTried: variantsTried, queryExpanded: variantIndex > 0,
-        } };
-        result.status = recordAndDecorateRouterStatus(source, result.status, phase);
-        sourceCache.set(cacheKey(source, query), { expiresAt: Date.now() + 25_000, value: result });
-        return result;
       }
     }
   }
 
   const durationMs = Date.now() - started;
   const result: SourceResult = { offers: [], status: {
-    id: source.id, name: source.name, state: "empty", offerCount: 0, durationMs,
-    message: variantsTried > 1 ? `перевірено ${variantsTried} точні варіанти запиту · карток не знайдено` : lastMessage,
+    id: source.id, name: source.name, state: lastState, offerCount: 0, durationMs,
+    message: variantsTried > 1 && lastState === "empty" ? `перевірено ${variantsTried} точні варіанти запиту · карток не знайдено` : lastMessage,
     tier: source.tier, attempts: networkAttempts,
     queryUsed: planned[Math.max(0, variantsTried - 1)]?.query || query,
     queryVariantsTried: variantsTried,
@@ -569,12 +637,18 @@ function routerStatus(source: LiveSource, phase: RouterPhase, message: string): 
   }, phase);
 }
 
+function policyDisabledSourceIds() {
+  return new Set(String(process.env.SMARTBUY_DISABLED_SOURCES || "").toLowerCase().split(",").map(value => value.trim()).filter(Boolean));
+}
+
 export async function searchUkraineLive(query: string, mode: LiveMode = "stores") {
-  const relevant = automaticLiveSources.filter(source => mode === "all" || (mode === "private" ? source.sellerType === "private" : source.sellerType === "store"));
+  const allRelevant = automaticLiveSources.filter(source => mode === "all" || (mode === "private" ? source.sellerType === "private" : source.sellerType === "store"));
+  const disabledIds = policyDisabledSourceIds();
+  const relevant = allRelevant.filter(source => !disabledIds.has(source.id.toLowerCase()));
   if (process.env.SMARTBUY_LIVE_FETCH_ENABLED === "false") {
     return {
       offers: [] as Offer[],
-      statuses: relevant.map(source => routerStatus(source, "not-selected", "live fetch вимкнено")),
+      statuses: allRelevant.map(source => routerStatus(source, "not-selected", disabledIds.has(source.id.toLowerCase()) ? "вимкнено політикою джерел" : "live fetch вимкнено")),
     };
   }
 
@@ -623,7 +697,8 @@ export async function searchUkraineLive(query: string, mode: LiveMode = "stores"
   const eligibleIds = new Set(eligibleProbes.map(source => source.id));
   const enoughAfterPrimary = primaryOfferCount >= targetOffers;
 
-  const statuses: SourceSearchStatus[] = relevant.map(source => {
+  const statuses: SourceSearchStatus[] = allRelevant.map(source => {
+    if (disabledIds.has(source.id.toLowerCase())) return routerStatus(source, "not-selected", "вимкнено політикою джерел");
     const found = byId.get(source.id);
     if (found) return found.status;
     if (!probesEnabled && source.tier === "probe") return routerStatus(source, "not-selected", "пробні джерела вимкнені");
@@ -677,6 +752,18 @@ function mergeDuplicateOffer(base: Offer, next: Offer): Offer {
     productRating: preferred.productRating || secondary.productRating,
     productReviewCount: Math.max(preferred.productReviewCount || 0, secondary.productReviewCount || 0) || undefined,
     reviewSnippets: reviewSnippets.length ? reviewSnippets : undefined,
+    sellerName: preferred.sellerName || secondary.sellerName,
+    sellerRating: preferred.sellerRating || secondary.sellerRating,
+    sellerReviewCount: Math.max(preferred.sellerReviewCount || 0, secondary.sellerReviewCount || 0) || undefined,
+    sellerSince: preferred.sellerSince || secondary.sellerSince,
+    returnPolicy: preferred.returnPolicy || secondary.returnPolicy,
+    availability: preferred.availability || secondary.availability,
+    shippingCost: preferred.shippingCost ?? secondary.shippingCost,
+    sku: preferred.sku || secondary.sku,
+    color: preferred.color || secondary.color,
+    regionVersion: preferred.regionVersion || secondary.regionVersion,
+    originalPrice: preferred.originalPrice ?? secondary.originalPrice,
+    originalCurrency: preferred.originalCurrency || secondary.originalCurrency,
     trusted: Boolean(base.trusted || next.trusted),
     verifiedSeller: Boolean(base.verifiedSeller || next.verifiedSeller),
     matchConfidence: Math.max(base.matchConfidence || 0, next.matchConfidence || 0) || undefined,
@@ -740,7 +827,11 @@ export function groupLiveOffers(offers: Offer[], query: string, alreadyDeduped =
     const candidateIdentity = productIdentityKey(title);
     const representativeIdentity = productIdentityKey(representative);
     if (candidateIdentity && representativeIdentity && candidateIdentity !== representativeIdentity) return { ok: false, score: 0 };
-    if (candidateIdentity && representativeIdentity && candidateIdentity === representativeIdentity) return { ok: true, score: 1 };
+    if (candidateIdentity && representativeIdentity && candidateIdentity === representativeIdentity) {
+      const strictVariant = evaluateTitleMatch(title, representative);
+      if (strictVariant.conflicts.some(conflict => ["color", "sku", "region"].includes(conflict))) return { ok: false, score: 0 };
+      return { ok: true, score: 1 };
+    }
 
     const main = groupSimilarity(title, representative);
     if (!main.reliable) return { ok: false, score: main.score };
@@ -753,7 +844,7 @@ export function groupLiveOffers(offers: Offer[], query: string, alreadyDeduped =
       const memberIdentity = productIdentityKey(memberTitle);
       if (candidateIdentity && memberIdentity && candidateIdentity !== memberIdentity) return { ok: false, score: 0 };
       const pair = evaluateTitleMatch(title, memberTitle);
-      if (pair.conflicts.some(conflict => ["brand", "model", "storage", "ram", "variant", "generation", "accessory", "counterfeit"].includes(conflict))) {
+      if (pair.conflicts.some(conflict => ["brand", "model", "storage", "ram", "variant", "generation", "color", "sku", "region", "accessory", "counterfeit"].includes(conflict))) {
         return { ok: false, score: 0 };
       }
       if (pair.reliable) score = Math.min(score, pair.score);

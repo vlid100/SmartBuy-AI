@@ -47,6 +47,19 @@ export type Offer = {
   productRating?: number;
   productReviewCount?: number;
   reviewSnippets?: string[];
+  // v5.0 seller + fulfillment signals. Values are only populated when the source exposes them.
+  sellerRating?: number;
+  sellerReviewCount?: number;
+  sellerSince?: string;
+  sellerAgeDays?: number;
+  returnPolicy?: string;
+  availability?: string;
+  shippingCost?: number;
+  originalPrice?: number;
+  originalCurrency?: string;
+  sku?: string;
+  color?: string;
+  regionVersion?: string;
 };
 
 export type PricePoint = { date: string; price: number; sourceCount?: number; offerCount?: number };
@@ -241,6 +254,16 @@ export type ProductImportResponse = {
     condition?: ListingCondition;
     rating?: number;
     reviewCount?: number;
+    delivery?: string;
+    availability?: string;
+    shippingCost?: number;
+    sellerRating?: number;
+    sellerReviewCount?: number;
+    sellerSince?: string;
+    returnPolicy?: string;
+    sku?: string;
+    color?: string;
+    regionVersion?: string;
   };
   product?: Product;
 };

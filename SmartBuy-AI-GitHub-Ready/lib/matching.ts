@@ -41,6 +41,63 @@ const BRAND_ALIASES: Record<string, string> = {
   lg: "lg", sony: "sony", соні: "sony",
 };
 
+
+const COLOR_ALIASES: Record<string, string> = {
+  black: "black", чорний: "black", чорна: "black", чорне: "black", чорні: "black", graphite: "graphite", графіт: "graphite", графітовий: "graphite",
+  white: "white", білий: "white", біла: "white", біле: "white", silver: "silver", срібний: "silver", сріблястий: "silver",
+  gold: "gold", golden: "gold", золотий: "gold", blue: "blue", синій: "blue", блакитний: "blue", navy: "blue",
+  green: "green", зелений: "green", red: "red", червоний: "red", pink: "pink", рожевий: "pink", purple: "purple", фіолетовий: "purple",
+  gray: "gray", grey: "gray", сірий: "gray", orange: "orange", помаранчевий: "orange", yellow: "yellow", жовтий: "yellow",
+  titanium: "titanium", титан: "titanium", natural: "natural", desert: "desert", midnight: "midnight", starlight: "starlight",
+};
+
+const REGION_ALIASES: Record<string, string> = {
+  ua: "ua", ukraine: "ua", україна: "ua", українська: "ua",
+  eu: "eu", europe: "eu", european: "eu", європа: "eu", європейська: "eu",
+  us: "us", usa: "us", american: "us", америка: "us", американська: "us",
+  uk: "uk", gb: "uk", british: "uk",
+  global: "global", глобальна: "global", globalversion: "global",
+  cn: "cn", china: "cn", chinese: "cn", китай: "cn", китайська: "cn",
+  hk: "hk", hongkong: "hk", jp: "jp", japan: "jp", японія: "jp",
+};
+
+function colorTokens(value: string) {
+  const raw = replaceAliases(value).toLowerCase().replace(/[^a-zа-яіїєґ0-9]+/giu, " ").split(/\s+/).filter(Boolean);
+  const out = new Set<string>();
+  for (const token of raw) if (COLOR_ALIASES[token]) out.add(COLOR_ALIASES[token]);
+  return out;
+}
+
+function skuTokens(value: string) {
+  const text = String(value || "").toUpperCase();
+  const out = new Set<string>();
+  const patterns = [
+    /\b[A-Z]{1,5}[-/]?\d{3,}[A-Z0-9-]{0,10}\b/g,
+    /\b[A-Z0-9]{2,8}[-/][A-Z0-9-]{3,16}\b/g,
+    /\bA\d{4}\b/g,
+  ];
+  for (const re of patterns) for (const match of text.matchAll(re)) {
+    const token = match[0].replace(/[^A-Z0-9]/g, "");
+    if (token.length >= 5 && !/^\d+$/.test(token)) out.add(token.toLowerCase());
+  }
+  return out;
+}
+
+function regionTokens(value: string) {
+  const normalized = replaceAliases(value).toLowerCase().replace(/[^a-zа-яіїєґ0-9]+/giu, " ").split(/\s+/).filter(Boolean);
+  const out = new Set<string>();
+  for (const token of normalized) if (REGION_ALIASES[token]) out.add(REGION_ALIASES[token]);
+  return out;
+}
+
+export function productVariantSignals(value: string) {
+  return {
+    colors: [...colorTokens(value)].sort(),
+    skus: [...skuTokens(value)].sort(),
+    regions: [...regionTokens(value)].sort(),
+  };
+}
+
 const KNOWN_BRANDS = new Set(Object.values(BRAND_ALIASES));
 const GENERIC_MODEL_TOKENS = new Set(["5g", "4g", "3g", "wifi", "wifi6", "wifi7", "usb", "typec", "oled", "qled", "amoled"]);
 
@@ -204,6 +261,21 @@ export function evaluateTitleMatch(reference: string, candidate: string): TitleM
   if (variantConflict) conflicts.push("variant");
   else if (leftVariants.size) reasons.push("variant");
 
+  const refColors = colorTokens(reference);
+  const candColors = colorTokens(candidate);
+  if (setConflict(refColors, candColors)) conflicts.push("color");
+  else if (refColors.size && intersectionCount(refColors, candColors)) reasons.push("color");
+
+  const refSkus = skuTokens(reference);
+  const candSkus = skuTokens(candidate);
+  if (setConflict(refSkus, candSkus)) conflicts.push("sku");
+  else if (refSkus.size && intersectionCount(refSkus, candSkus)) reasons.push("sku");
+
+  const refRegions = regionTokens(reference);
+  const candRegions = regionTokens(candidate);
+  if (setConflict(refRegions, candRegions)) conflicts.push("region");
+  else if (refRegions.size && intersectionCount(refRegions, candRegions)) reasons.push("region");
+
   const refAccessory = accessoryTokens(reference);
   const candAccessory = accessoryTokens(candidate);
   if (!refAccessory.size && candAccessory.size) conflicts.push("accessory");
@@ -265,6 +337,9 @@ export function productIdentityKey(value: string): string | null {
   const families = [...familySignals(value)].sort();
   const capacities = [...capacityTokens(value)].filter(token => !token.startsWith("ram:")).sort();
   const variants = [...variantTokens(value)].sort();
+  // Optional color / SKU / region signals are checked pairwise in evaluateTitleMatch().
+  // They stay out of the base key so an offer that omits a color or region can still merge
+  // with an otherwise identical offer that explicitly names it.
   if (!families.length && !capacities.length && !variants.length) return null;
   return [brands.join(",") || "_", families.join(",") || "_", capacities.join(",") || "_", variants.join(",") || "_"].join("|");
 }
@@ -302,6 +377,9 @@ function readableSignal(signal: string) {
   if (signal.startsWith("model:")) return signal.slice(6).toUpperCase();
   if (signal.startsWith("ram:")) return `RAM ${signal.slice(4).toUpperCase()}`;
   if (/^\d+gb$/.test(signal)) return signal.toUpperCase();
+  if (signal.startsWith("color:")) return signal.slice(6);
+  if (signal.startsWith("sku:")) return `SKU ${signal.slice(4).toUpperCase()}`;
+  if (signal.startsWith("region:")) return `регіон ${signal.slice(7).toUpperCase()}`;
   return signal.replace(":", " ");
 }
 
@@ -310,17 +388,23 @@ export function productIdentityMeta(value: string): ProductIdentityMeta {
   const families = [...familySignals(value)].sort();
   const capacities = [...capacityTokens(value)].filter(token => !token.startsWith("ram:")).sort();
   const variants = [...variantTokens(value)].sort();
+  const colors = [...colorTokens(value)].sort();
+  const skus = [...skuTokens(value)].sort();
+  const regions = [...regionTokens(value)].sort();
   const displayBrands = families.some(item => item.startsWith("iphone:")) && brands.includes("apple") ? brands.filter(item => item !== "iphone") : brands;
   const signals: string[] = [];
   if (brands.length) signals.push("бренд");
   if (families.length) signals.push("модель");
   if (variants.length) signals.push("версія");
   if (capacities.length) signals.push("пам’ять");
-  const parts = [...displayBrands, ...families, ...variants, ...capacities].map(readableSignal);
+  if (colors.length) signals.push("колір");
+  if (skus.length) signals.push("SKU");
+  if (regions.length) signals.push("регіон");
+  const parts = [...displayBrands, ...families, ...variants, ...capacities, ...colors.map(x => `color:${x}`), ...skus.map(x => `sku:${x}`), ...regions.map(x => `region:${x}`)].map(readableSignal);
   return {
     key: productIdentityKey(value),
     label: parts.join(" · ") || titleTokens(value).slice(0, 6).join(" ") || "товар",
     signals,
-    hasStrongIdentity: families.length > 0 || capacities.length > 0 || variants.length > 0,
+    hasStrongIdentity: families.length > 0 || capacities.length > 0 || variants.length > 0 || skus.length > 0,
   };
 }

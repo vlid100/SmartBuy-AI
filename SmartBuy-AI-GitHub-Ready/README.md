@@ -1,42 +1,63 @@
-# SmartBuy AI v4.0 — Fair Price Intelligence
-## v4.0.1 build fix
+# SmartBuy AI v5.0 — Production Market & Web Push
 
-- Fixed strict TypeScript null/undefined checks in the Diagnostics live-source section.
-- `diagnostics.sourceStatuses` is now normalized to an empty array before rendering.
-- Bumped runtime/API diagnostic version and Service Worker cache to 4.0.1.
-- No Supabase SQL changes are required.
+v5.0 is a consolidation release: instead of adding another isolated card, it closes the remaining production gaps around live sources, seller data, variant dedupe, Web Push and deployment hardening.
 
+## What is new
 
-SmartBuy is a Next.js/Vercel shopping assistant focused on the Ukrainian market, private listings and assisted international comparison.
+- **True Web Push**: VAPID + PushManager + Supabase subscriptions + service-worker `push` / `notificationclick`. Notifications created by price tracking and Deal Alerts can be delivered when no SmartBuy tab is open.
+- **International Live** for Amazon, AliExpress and Temu: best-effort public-page search + limited detail-page enrichment, original currency, NBU conversion to UAH, image, seller, availability, shipping and returns when the source exposes them. Parsed shipping cost can prefill the Real Total Cost calculator. CAPTCHA/403 is reported honestly and direct search/import stays available.
+- **OLX / Rozetka hardening**: alternate public search URLs, retries, JSON/JSON-LD + selectors + generic fallback, strict original-query validation and limited product-page enrichment for seller/delivery/return signals.
+- **Seller intelligence v2**: seller rating, review count, account/store history and return policy now feed Seller Trust when these fields are available. Private-listing warnings stay neutral and never label a seller as a fraudster.
+- **Variant Guard v2**: color, SKU/model code and regional-version conflicts are checked before two offers can merge. Missing optional data does not automatically split an otherwise matching product.
+- **Production layer**: per-instance API burst rate limiting, optional Supabase server-event log, stronger security headers, Privacy/Terms pages, `robots.txt`, `sitemap.xml`, source-use guardrails and diagnostics for Web Push / new tables.
 
-## New in v4.0
+## One-time setup after upload
 
-- **Fair Price Intelligence** estimates a typical market price range for the exact product/modification instead of treating the lowest listing as the market price.
-- The estimator excludes flagged price anomalies and prefers stronger model matches so a wrong storage/RAM/model variant is less likely to distort the range.
-- When there is enough data, SmartBuy evaluates the recommended offer against offers in the **same condition** (new / used / refurbished) rather than mixing them.
-- The product drawer shows the typical range, market midpoint, confidence, source/sample count, historical minimum and a visual price-position bar.
-- Every seller can now receive a clear market-price label: **below market**, **within market**, **above market** or **suspiciously low**.
-- Confidence is reduced when the sample is small, only one source is available or the price spread is unusually wide.
-- Existing price history is used as context, but it does not silently overwrite the current market range.
-- No new Supabase tables or SQL are required.
+### 1. Supabase
+Run **`supabase/v5.0_production.sql`** once in Supabase → SQL Editor. It adds:
 
-## Existing v3.9 behavior retained
+- `smartbuy_push_subscriptions`
+- `smartbuy_server_events`
 
-- Seller Decision Engine combining price, seller trust, model match, warranty, delivery/payment signals and Real Total Cost.
-- Recommended seller is separated from the absolute cheapest seller and the strongest trust signals.
+`supabase/update_to_latest.sql` and `schema.sql` also contain the same v5.0 migration for a fresh project.
 
-## Existing v3.x stack retained
+### 2. VAPID keys for Web Push
+After `npm install`, run:
 
-- Variant Guard + Seller Merge
-- Multi-URL Assisted Product Import
-- Adaptive Source Router + Query Expansion
-- Search deduplication + canonical identity
-- Source Connector Capability Matrix
-- Supabase watchlist/history/saved searches/notifications/purchase workspace
-- Price Timing, seller trust, review/spec intelligence
-- Real Total Cost and cross-market comparison
-- PWA, diagnostics and smoke-check
+```bash
+npm run vapid
+```
 
-## Database
+Add the printed values to Vercel → Project → Settings → Environment Variables:
 
-No new Supabase SQL is required for v4.0. If `supabase/update_to_latest.sql` from v2.9 was already applied, the database can stay as-is.
+- `WEB_PUSH_PUBLIC_KEY`
+- `WEB_PUSH_PRIVATE_KEY`
+- `WEB_PUSH_SUBJECT` (for example `mailto:you@example.com`)
+
+Redeploy. In SmartBuy → Notifications press **Увімкнути Web Push**, then **Тест push**.
+
+### 3. Recommended environment variable
+
+Set `NEXT_PUBLIC_SITE_URL` to your production URL so sitemap/canonical metadata use the correct host.
+
+If a marketplace policy changes, you can stop its automatic connector without a code change:
+
+```env
+SMARTBUY_DISABLED_SOURCES=olx,amazon
+```
+
+Leave the variable empty normally. Direct links remain available.
+
+## Important limitation of external sources
+
+SmartBuy does not bypass CAPTCHA, authentication, access controls or source rate limits. Amazon/AliExpress/Temu/OLX/Rozetka and other sites may independently change markup or block Vercel server requests. In that case SmartBuy marks the source as blocked/empty and keeps a direct source link instead of inventing data. See `SOURCE_USE.md`.
+
+## Checks
+
+```bash
+npm install
+npm run smoke
+npm run audit
+npm run check
+npm run build
+```

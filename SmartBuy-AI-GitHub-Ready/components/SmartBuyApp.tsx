@@ -150,7 +150,7 @@ function totalCost(profile: CostMathInput) {
 }
 
 function isInternationalCostProfile(profile: TotalCostProfile) {
-  return profile.sourceKind === "manual" && manualCostSources.includes(profile.sourceName as (typeof manualCostSources)[number]);
+  return manualCostSources.includes(profile.sourceName as (typeof manualCostSources)[number]);
 }
 
 function costOfferId(productId: string, offer: Offer) {
@@ -402,8 +402,16 @@ function sellerRiskScore(offer: Offer, median: number | null) {
   if (!offer.verifiedSeller && !offer.trusted) { score += 18; reasons.push("продавець не підтверджений SmartBuy"); }
   if (offer.sellerType === "private") { score += 8; reasons.push("приватне оголошення"); }
   if (offer.sellerType === "private" && !offer.warranty) { score += 10; reasons.push("гарантія не підтверджена"); }
+  if (offer.sellerRating != null && offer.sellerRating < 3.6) { score += 16; reasons.push("низький рейтинг продавця"); }
+  if (offer.sellerReviewCount != null && offer.sellerReviewCount > 0 && offer.sellerReviewCount < 5) { score += 6; reasons.push("мало відгуків продавця"); }
+  const sellerYear = Number(String(offer.sellerSince || "").match(/\b(19\d{2}|20\d{2})\b/)?.[1] || 0);
+  const sellerAgeDays = offer.sellerAgeDays || (sellerYear ? Math.max(0, Math.floor((Date.now() - Date.UTC(sellerYear, 0, 1)) / 86_400_000)) : 0);
+  if (offer.sellerType === "private" && sellerAgeDays > 0 && sellerAgeDays < 30) { score += 14; reasons.push("дуже новий профіль продавця"); }
+  if (offer.sellerType === "private" && !offer.sellerSince && !offer.sellerAgeDays) { score += 5; reasons.push("історію профілю не отримано"); }
+  if (offer.sellerType === "private" && offer.delivery && !/(olx достав|післяплат|накладен|самовивіз|зустріч|оплата при отрим)/i.test(offer.delivery)) { score += 7; reasons.push("немає підтвердженого безпечнішого сценарію оплати"); }
   if (median && offer.price < median * 0.72) { score += 20; reasons.push("ціна значно нижча за ринок"); }
   if (!offer.delivery) { score += 3; reasons.push("умови доставки не підтверджені"); }
+  if (offer.sellerType === "store" && !offer.returnPolicy) { score += 3; reasons.push("умови повернення не отримані"); }
 
   score = Math.max(1, Math.min(100, Math.round(score)));
   const level = score <= 24 ? "low" : score <= 48 ? "medium" : "high";
@@ -623,6 +631,13 @@ function PriceHistoryChart({ points, currentPrice }: { points: PricePoint[]; cur
   );
 }
 
+function vapidKeyToBytes(value: string) {
+  const padding = "=".repeat((4 - value.length % 4) % 4);
+  const base64 = (value + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = window.atob(base64);
+  return Uint8Array.from([...raw].map(ch => ch.charCodeAt(0)));
+}
+
 export default function SmartBuyApp() {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("Усі");
@@ -666,6 +681,7 @@ export default function SmartBuyApp() {
   const [notificationCloudReady, setNotificationCloudReady] = useState<boolean | null>(null);
   const [notificationMessage, setNotificationMessage] = useState("");
   const [browserPermission, setBrowserPermission] = useState<NotificationPermission | "unsupported">("unsupported");
+  const [pushState, setPushState] = useState<"checking" | "ready" | "off" | "unsupported" | "needs_sql" | "needs_keys" | "error">("checking");
   const [smartSearchActive, setSmartSearchActive] = useState(false);
   const [smartMeta, setSmartMeta] = useState<SmartSearchMeta | null>(null);
   const [shortlist, setShortlist] = useState<Record<string, Product>>({});
@@ -721,7 +737,7 @@ export default function SmartBuyApp() {
       return true;
     });
     const median = medianOfferPrice(selected.offers);
-    const decisionScores = new Map((selectedOfferDecision?.ranked || []).map(item => [item.offer, item.score] as const));
+    const decisionScores = new Map<Offer, number>((selectedOfferDecision?.ranked || []).map(item => [item.offer, item.score] as const));
     items = [...items].sort((a, b) => {
       if (offerSort === "recommended") return (decisionScores.get(b) || 0) - (decisionScores.get(a) || 0) || offerValueScore(b, median) - offerValueScore(a, median) || a.price - b.price;
       if (offerSort === "value") return offerValueScore(b, median) - offerValueScore(a, median) || a.price - b.price;
@@ -775,7 +791,7 @@ export default function SmartBuyApp() {
   const selectedCostTotal = costDraft ? totalCost(costDraft) : 0;
   const selectedCostSourceTotal = costDraft ? sourceTotalCost(costDraft) : 0;
   const selectedCostCurrency = costDraft ? profileCurrency(costDraft) : "UAH";
-  const selectedCostProfiles = useMemo(() => selected ? Object.values(costProfiles).filter(profile => profile.productId === selected.id && totalCost(profile) > 0).sort((a, b) => totalCost(a) - totalCost(b)) : [], [selected, costProfiles]);
+  const selectedCostProfiles = useMemo<TotalCostProfile[]>(() => selected ? (Object.values(costProfiles) as TotalCostProfile[]).filter(profile => profile.productId === selected.id && totalCost(profile) > 0).sort((a, b) => totalCost(a) - totalCost(b)) : [], [selected, costProfiles]);
   const selectedCrossMarket = useMemo(() => {
     const domestic = selectedCostProfiles.filter(profile => !isInternationalCostProfile(profile))[0] || null;
     const international = selectedCostProfiles.filter(profile => isInternationalCostProfile(profile))[0] || null;
@@ -820,7 +836,14 @@ export default function SmartBuyApp() {
       setSyncKey(key);
     } catch {}
     if (typeof window !== "undefined" && "Notification" in window) setBrowserPermission(Notification.permission);
-    if (key) void initializeCloud(key);
+    if (typeof window !== "undefined") {
+      const initialTab = new URLSearchParams(window.location.search).get("tab");
+      if (["search", "watch", "saved", "notifications", "diagnostics"].includes(initialTab || "")) setTab(initialTab as Tab);
+    }
+    if (key) {
+      void initializeCloud(key);
+      if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") void ensurePushSubscription(key, false);
+    }
     void runSearch();
     void loadFxRates();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -858,7 +881,7 @@ export default function SmartBuyApp() {
   }, [tab]);
 
   useEffect(() => {
-    if (browserPermission !== "granted" || notifications.length === 0 || typeof window === "undefined" || !("Notification" in window)) return;
+    if (pushState === "ready" || browserPermission !== "granted" || notifications.length === 0 || typeof window === "undefined" || !("Notification" in window)) return;
     let shown: string[] = [];
     try { shown = JSON.parse(localStorage.getItem("smartbuy-browser-notified-v1") || "[]"); } catch {}
     const seen = new Set(shown);
@@ -868,7 +891,7 @@ export default function SmartBuyApp() {
       seen.add(item.id);
     }
     try { localStorage.setItem("smartbuy-browser-notified-v1", JSON.stringify(Array.from(seen).slice(-100))); } catch {}
-  }, [notifications, browserPermission]);
+  }, [notifications, browserPermission, pushState]);
 
   useEffect(() => () => { searchAbortRef.current?.abort(); }, []);
 
@@ -898,7 +921,7 @@ export default function SmartBuyApp() {
       sourceName: option.sourceName,
       sourceKind: option.kind,
       itemPrice: option.offer?.price || 0,
-      delivery: 0,
+      delivery: option.offer?.shippingCost || 0,
       fees: 0,
       taxes: 0,
       discount: 0,
@@ -1650,14 +1673,49 @@ export default function SmartBuyApp() {
     }
   }
 
+  async function ensurePushSubscription(key = syncKey, announce = true) {
+    if (!key || typeof window === "undefined" || !("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+      setPushState("unsupported"); return false;
+    }
+    if (Notification.permission !== "granted") { setPushState("off"); return false; }
+    try {
+      const configResponse = await fetchWithRetry("/api/push", undefined, 2);
+      const config = await configResponse.json();
+      if (!config?.supported || !config.publicKey) { setPushState("needs_keys"); return false; }
+      const registration = await navigator.serviceWorker.ready;
+      let subscription = await registration.pushManager.getSubscription();
+      if (!subscription) subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: vapidKeyToBytes(config.publicKey) });
+      const response = await fetchWithRetry("/api/push", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: key, subscription: subscription.toJSON() }) }, 2);
+      const data = await response.json();
+      if (data?.tableReady === false) { setPushState("needs_sql"); if (announce) setNotificationMessage("Для Web Push запусти supabase/v5.0_production.sql."); return false; }
+      if (!response.ok || !data?.ok) { setPushState("error"); return false; }
+      setPushState("ready");
+      if (announce) setNotificationMessage("Web Push активний: сповіщення можуть приходити навіть коли SmartBuy закритий.");
+      return true;
+    } catch {
+      setPushState("error"); return false;
+    }
+  }
+
   async function requestBrowserNotifications() {
-    if (typeof window === "undefined" || !("Notification" in window)) { setBrowserPermission("unsupported"); return; }
+    if (typeof window === "undefined" || !("Notification" in window)) { setBrowserPermission("unsupported"); setPushState("unsupported"); return; }
     try {
       const permission = await Notification.requestPermission();
       setBrowserPermission(permission);
+      if (permission === "granted") await ensurePushSubscription(syncKey, true); else setPushState("off");
     } catch {
       setBrowserPermission(Notification.permission);
+      setPushState("error");
     }
+  }
+
+  async function testWebPush() {
+    if (pushState !== "ready" || !syncKey) return;
+    try {
+      const response = await fetchWithRetry("/api/push", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: syncKey, test: true }) }, 2);
+      const data = await response.json();
+      setNotificationMessage(data?.sent > 0 ? "Тестовий Web Push відправлено. Можеш закрити вкладку й перевірити наступні сповіщення." : "Push-підписка є, але тест не доставився. Перевір VAPID та дозволи браузера.");
+    } catch { setNotificationMessage("Не вдалося відправити тестовий Web Push."); }
   }
 
   async function markAllNotificationsRead() {
@@ -2003,7 +2061,7 @@ export default function SmartBuyApp() {
       </header>
 
       {tab !== "diagnostics" && <section className="hero" id="search">
-        <div className="eyebrow"><Sparkles size={15}/> SmartBuy AI v4.0 · Fair Price Intelligence</div>
+        <div className="eyebrow"><Sparkles size={15}/> SmartBuy AI v5.0 · Production Market & Web Push</div>
         <h1>Знайди потрібну річ.<br/><span>Порівняй увесь ринок.</span></h1>
         <p>Українські магазини, приватні оголошення та закордонні майданчики в одному місці. SmartBuy показує автоматично підтверджені ціни окремо від прямих пошуків, щоб не вигадувати дані.</p>
 
@@ -2089,7 +2147,7 @@ export default function SmartBuyApp() {
         {tab === "search" && (
           <>
             <div className="sourceStatus marketStatus">
-              <div><BadgeCheck size={18}/><b>SmartBuy AI v4.0</b><span>{provider}</span></div>
+              <div><BadgeCheck size={18}/><b>SmartBuy AI v5.0</b><span>{provider}</span></div>
               <p><Info size={15}/> Зелені ціни — автоматично підтверджені. Adaptive Router ставить на перше місце джерела, які реально відповідають, розширює пошук лише коли потрібно й не обходить захист сайтів.</p>
             </div>
 
@@ -2148,7 +2206,7 @@ export default function SmartBuyApp() {
 
             {searched && searchQuality && (
               <section className="searchQualityCard">
-                <div className="searchQualityHead"><div><BadgeCheck size={17}/><span>Якість групування</span><b>{searchQuality.averageGroupingConfidence || 0}%</b></div><small>v4.0 Fair Price</small></div>
+                <div className="searchQualityHead"><div><BadgeCheck size={17}/><span>Якість групування</span><b>{searchQuality.averageGroupingConfidence || 0}%</b></div><small>v5.0 Variant + Seller Guard</small></div>
                 <div className="searchQualityGrid">
                   <div><span>Сирих пропозицій</span><b>{searchQuality.rawOfferCount}</b></div>
                   <div><span>Унікальних</span><b>{searchQuality.uniqueOfferCount}</b><small>{searchQuality.duplicateOffersRemoved ? `-${searchQuality.duplicateOffersRemoved} дублів` : "без дублів"}</small></div>
@@ -2178,7 +2236,7 @@ export default function SmartBuyApp() {
             {sourceLinks.length > 0 && (
               <section className="sourceLauncher">
                 <div className="sourceLauncherHead">
-                  <div><h3>Де SmartBuy шукає цей товар</h3><p>v4.0 додає Fair Price Intelligence поверх Seller Decision Engine: SmartBuy визначає типовий ціновий діапазон конкретної модифікації, відсіює аномалії та показує позицію кожної пропозиції відносно ринку. Source Connectors, Adaptive Router, Query Expansion, Seller Merge і дедуплікація залишаються.</p></div>
+                  <div><h3>Де SmartBuy шукає цей товар</h3><p>v5.0 додає International Live, посилені OLX/Rozetka конектори, seller data, точніший Variant Guard за кольором/SKU/регіоном і production-захист. Fair Price, Adaptive Router, Query Expansion та Seller Decision Engine залишаються.</p></div>
                   <span>{sourceLinks.filter(s => s.access === "live").length} стабільні · {sourceLinks.filter(s => s.access === "probe").length} пробні · {sourceLinks.filter(s => s.access === "direct").length} прямі</span>
                 </div>
 
@@ -2337,7 +2395,7 @@ export default function SmartBuyApp() {
             </div>
 
             <div className="diagnosticSummaryGrid">
-              <div><Server size={17}/><span>Версія</span><b>{diagnostics?.version || "4.0.1"}</b><small>{diagnostics?.environment || "—"}</small></div>
+              <div><Server size={17}/><span>Версія</span><b>{diagnostics?.version || "5.0.0"}</b><small>{diagnostics?.environment || "—"}</small></div>
               <div><Database size={17}/><span>Supabase</span><b>{diagnostics?.cloudConfigured ? "Підключено" : diagnostics ? "Не налаштовано" : "—"}</b><small>ключі не показуються</small></div>
               <div><Wifi size={17}/><span>Інтернет</span><b>{clientRuntime ? (clientRuntime.online ? "Online" : "Offline") : "—"}</b><small>{clientRuntime?.serviceWorker === "active" ? "Service Worker активний" : clientRuntime?.serviceWorker === "supported" ? "Service Worker підтримується" : "Service Worker недоступний"}</small></div>
               <div><Bell size={17}/><span>Браузерні сповіщення</span><b>{clientRuntime?.notification === "granted" ? "Дозволені" : clientRuntime?.notification === "denied" ? "Заблоковані" : clientRuntime?.notification === "default" ? "Не запитані" : "Недоступні"}</b><small>{clientRuntime?.installed ? "PWA встановлена" : "веб-режим"}</small></div>
@@ -2382,7 +2440,8 @@ export default function SmartBuyApp() {
             <div className="notificationHead">
               <div><div className="savedEyebrow"><Bell size={15}/> Центр сповіщень</div><h2>Сповіщення</h2><p>Падіння ціни, досягнення цільової ціни та нові Deal Alerts зберігаються в хмарі.</p></div>
               <div className="notificationHeadActions">
-                {browserPermission !== "granted" && browserPermission !== "unsupported" && <button className="browserNotifyButton" onClick={() => void requestBrowserNotifications()}><Bell size={14}/> Увімкнути браузерні</button>}
+                {(browserPermission !== "granted" || pushState !== "ready") && browserPermission !== "unsupported" && <button className="browserNotifyButton" onClick={() => void requestBrowserNotifications()}><Bell size={14}/> Увімкнути Web Push</button>}
+                {pushState === "ready" && <button className="browserNotifyButton" onClick={() => void testWebPush()}><Zap size={14}/> Тест push</button>}
                 <button onClick={() => void markAllNotificationsRead()} disabled={unreadNotificationCount === 0}><Check size={14}/> Прочитати всі</button>
                 <button onClick={() => void loadNotifications()}><RefreshCw size={14}/> Оновити</button>
               </div>
@@ -2391,7 +2450,10 @@ export default function SmartBuyApp() {
               {notificationCloudReady === true ? <Cloud size={16}/> : <CloudOff size={16}/>}
               <div><b>{notificationCloudReady === true ? "Сповіщення у хмарі" : notificationCloudReady === false ? "Потрібна таблиця Notifications" : "Перевіряю центр сповіщень"}</b><span>{notificationMessage || "SmartBuy перевіряє Supabase."}</span></div>
             </div>
-            {browserPermission === "granted" && <div className="browserNotifyState"><BadgeCheck size={14}/><span>Браузерні сповіщення дозволені. Нові непрочитані події можуть з’являтися системним повідомленням, коли сайт відкритий.</span></div>}
+            {browserPermission === "granted" && pushState === "ready" && <div className="browserNotifyState"><BadgeCheck size={14}/><span><b>Справжній Web Push активний.</b> Сповіщення про ціну можуть приходити через service worker навіть коли вкладка SmartBuy повністю закрита.</span></div>}
+            {browserPermission === "granted" && pushState === "needs_sql" && <div className="browserNotifyState denied"><Info size={14}/><span>Дозвіл браузера є, але потрібна таблиця push-підписок. Запусти <code>supabase/v5.0_production.sql</code>.</span></div>}
+            {browserPermission === "granted" && pushState === "needs_keys" && <div className="browserNotifyState denied"><Info size={14}/><span>Для Web Push додай у Vercel <code>WEB_PUSH_PUBLIC_KEY</code>, <code>WEB_PUSH_PRIVATE_KEY</code> і <code>WEB_PUSH_SUBJECT</code>.</span></div>}
+            {browserPermission === "granted" && pushState === "error" && <div className="browserNotifyState denied"><Info size={14}/><span>Web Push не активувався. Перевір VAPID, service worker та таблицю push-підписок.</span></div>}
             {browserPermission === "denied" && <div className="browserNotifyState denied"><Info size={14}/><span>Браузерні сповіщення заблоковані в налаштуваннях браузера. Центр SmartBuy все одно працює.</span></div>}
             {notifications.length === 0 ? <div className="savedEmpty"><Bell size={28}/><h3>Поки немає сповіщень</h3><p>Коли ціна впаде або буде досягнута ціль — подія з’явиться тут.</p></div> : <div className="notificationList">
               {notifications.map(item => <article className={`notificationCard ${item.readAt ? "read" : "unread"} ${item.kind}`} key={item.id}>
@@ -2590,7 +2652,7 @@ export default function SmartBuyApp() {
 
             <div className="compareTableWrap">
               <table className="compareTable compareTableV17">
-                <thead><tr><th>Показник</th>{comparisonProfiles.map(({product}) => <th key={product.id}>{product.title}</th>)}</tr></thead>
+                <thead><tr><th>Показник</th>{comparisonProfiles.map(item => <th key={item.product.id}>{item.product.title}</th>)}</tr></thead>
                 <tbody>
                   <tr><td>Найнижча ціна</td>{comparisonProfiles.map(item => <td key={item.product.id} className={item.product.bestPrice === comparisonMinPrice ? "bestCell" : ""}><b>{money.format(item.product.bestPrice)}</b></td>)}</tr>
                   <tr><td>Нове від</td>{comparisonProfiles.map(item => <td key={item.product.id}>{bestByCondition(item.product.offers,"new") ? money.format(bestByCondition(item.product.offers,"new")!) : "—"}</td>)}</tr>
@@ -2747,6 +2809,9 @@ export default function SmartBuyApp() {
               <div><span>Гарантія</span><b>{selectedSellerTrust.warrantyLabel}</b><small>{selectedSellerTrust.warrantyScore}/100</small></div>
               <div><span>Доставка / огляд</span><b>{selectedSellerTrust.deliveryLabel}</b><small>{selectedSellerTrust.deliveryScore}/100</small></div>
               <div><span>Оплата</span><b>{selectedSellerTrust.paymentLabel}</b><small>{selectedSellerTrust.paymentScore}/100</small></div>
+              <div><span>Рейтинг продавця</span><b>{selectedSellerTrust.sellerRatingLabel}</b><small>{selectedBestValue.sellerReviewCount ? "дані майданчика" : "якщо доступно"}</small></div>
+              <div><span>Історія продавця</span><b>{selectedSellerTrust.sellerHistoryLabel}</b><small>{selectedBestValue.sellerSince ? "отримано зі сторінки" : "потрібна перевірка"}</small></div>
+              <div><span>Повернення</span><b>{selectedSellerTrust.returnLabel}</b><small>{selectedBestValue.returnPolicy ? "умови знайдено" : "уточни перед оплатою"}</small></div>
             </div>
             {(selectedSellerTrust.strengths.length > 0 || selectedSellerTrust.checks.length > 0) && <div className="sellerSignalColumns">
               <div><b>Що виглядає добре</b>{selectedSellerTrust.strengths.length ? selectedSellerTrust.strengths.map(item => <span className={`sellerSignal ${item.tone}`} key={item.label}><Check size={11}/><i><strong>{item.label}</strong><small>{item.detail}</small></i></span>) : <span className="sellerSignal neutral"><Info size={11}/><i><strong>Потрібно більше даних</strong><small>SmartBuy не бачить достатньо позитивних сигналів у доступних полях.</small></i></span>}</div>
@@ -2940,7 +3005,7 @@ export default function SmartBuyApp() {
                   <div className="detailOfferInfo">
                     <div className="detailOfferHead"><b>{o.marketplace}</b>{isBestValue && <span className="bestValueBadge"><Sparkles size={10}/> Рекомендовано</span>}{isBest && <span className="bestDealBadge">Найнижча ціна</span>}<span className={`conditionTag ${o.condition}`}>{conditionLabel(o.condition)}</span></div>
                     <small>{o.sellerType === "private" ? "Приватний продавець" : o.sellerName || o.store}</small>
-                    <div className="offerMetaRow">{o.city && <span><MapPin size={11}/> {o.city}</span>}{o.delivery && <span>{o.delivery}</span>}{o.warranty && <span>{o.warranty}</span>}</div>
+                    <div className="offerMetaRow">{o.city && <span><MapPin size={11}/> {o.city}</span>}{o.delivery && <span>{o.delivery}</span>}{o.availability && <span>{o.availability}</span>}{o.warranty && <span>{o.warranty}</span>}{o.sellerRating && <span>продавець {o.sellerRating}/5{o.sellerReviewCount ? ` · ${o.sellerReviewCount} відг.` : ""}</span>}{o.returnPolicy && <span>повернення: {o.returnPolicy}</span>}{o.originalPrice && o.originalCurrency && <span>{o.originalPrice} {o.originalCurrency} → {money.format(o.price)}</span>}</div>
                     {selected && costProfiles[costProfileKey(selected.id, costOfferId(selected.id, o))] && <div className="offerFinalCost"><span>Кінцева ціна</span><b>{money.format(totalCost(costProfiles[costProfileKey(selected.id, costOfferId(selected.id, o))]))}</b></div>}
                     <div className="offerTrustRow">{decision && <span className={`decisionPill ${decision.level}`}>Decision {decision.score}/100</span>}{fairPosition && fairPosition.level !== "unknown" && <span className={`fairPricePill ${fairPosition.level}`}>{fairPosition.label}</span>}<span className={`valuePill ${valueScore >= 80 ? "good" : valueScore < 68 ? "warn" : ""}`}>Smart Value {valueScore}/100 · {valueScoreLabel(valueScore)}</span>{medianPosition ? <span className={`medianPosition ${medianPosition.tone}`}>{medianPosition.label}</span> : null}{o.matchConfidence ? <span className="matchPill">збіг {o.matchConfidence}%</span> : null}{o.verifiedSeller ? <span className="verifiedPill"><ShieldCheck size={11}/> перевірений</span> : null}{o.priceAnomaly ? <span className="anomalyPill">цінова аномалія</span> : null}<span className={`sellerTrustPill ${sellerTrustProfile(o, median).level}`}>довіра {sellerTrustProfile(o, median).score}/100</span><span className={`sellerRiskPill ${sellerRiskScore(o, median).level}`}>{sellerRiskScore(o, median).label} · {sellerRiskScore(o, median).score}/100</span>{riskFlags.slice(0,2).map(flag => <span className="riskPill" key={flag}>{flag}</span>)}</div>
                   </div>
@@ -2953,7 +3018,7 @@ export default function SmartBuyApp() {
       </div>}
 
 
-      <footer><div className="brand"><div className="logo">S</div><span>SmartBuy AI</span></div><p>v4.0 · Fair Price Intelligence · Seller Decision Engine · Variant Guard · Real Total Cost · Deal Alerts.</p></footer>
+      <footer><div className="brand"><div className="logo">S</div><span>SmartBuy AI</span></div><p>v5.0 · International Live · Web Push · Seller Signals · Variant Guard · Production Hardening. · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></p></footer>
     </main>
   );
 }

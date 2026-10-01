@@ -14,7 +14,7 @@ export async function GET() {
       signal: controller.signal,
       headers: { Accept: "application/json", "User-Agent": "SmartBuy-AI/2.3" },
       next: { revalidate: 3600 },
-    });
+    } as RequestInit & { next?: { revalidate: number } });
     if (!response.ok) throw new Error(`nbu_${response.status}`);
     const rows = (await response.json()) as NbuRate[];
     const rates: Record<string, number> = { UAH: 1 };

@@ -3,8 +3,9 @@ import type { ListingCondition, Offer, Product, SellerType } from "./types";
 import { enrichProductSpecs } from "./specs";
 import { enrichProductReviews } from "./review-intelligence";
 import { identifySourceUrl } from "./source-registry";
+import { productVariantSignals } from "./matching";
 
-const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 SmartBuyAI/4.0";
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 SmartBuyAI/5.0";
 const SUPPORTED_FX = new Set(["USD", "EUR", "PLN", "GBP"]);
 
 type ImportExtraction = "automatic" | "partial" | "manual";
@@ -29,6 +30,16 @@ export type ImportedProductResult = {
     condition?: ListingCondition;
     rating?: number;
     reviewCount?: number;
+    delivery?: string;
+    availability?: string;
+    shippingCost?: number;
+    sellerRating?: number;
+    sellerReviewCount?: number;
+    sellerSince?: string;
+    returnPolicy?: string;
+    sku?: string;
+    color?: string;
+    regionVersion?: string;
   };
   product?: Product;
 };
@@ -42,6 +53,16 @@ type ParsedProduct = {
   condition?: ListingCondition;
   rating?: number;
   reviewCount?: number;
+  delivery?: string;
+  availability?: string;
+  shippingCost?: number;
+  sellerRating?: number;
+  sellerReviewCount?: number;
+  sellerSince?: string;
+  returnPolicy?: string;
+  sku?: string;
+  color?: string;
+  regionVersion?: string;
 };
 
 function clean(value: unknown) {
@@ -109,6 +130,32 @@ function objectArray(value: unknown): Record<string, unknown>[] {
   return [];
 }
 
+function availabilityText(value: unknown) {
+  const raw = clean(value); if (!raw) return undefined;
+  if (/instock|in stock|наяв|в наличии/i.test(raw)) return "є в наявності";
+  if (/outofstock|out of stock|немає|нет в наличии/i.test(raw)) return "немає в наявності";
+  if (/preorder|pre-order|передзамов/i.test(raw)) return "передзамовлення";
+  return raw.replace(/^https?:\/\/schema\.org\//i, "").slice(0, 100);
+}
+function returnPolicyText(value: unknown) {
+  const row = objectArray(value)[0];
+  if (!row) return clean(value).slice(0, 140) || undefined;
+  const days = count(valueAt(row, ["merchantReturnDays", "returnDays"]));
+  const category = clean(valueAt(row, ["returnPolicyCategory", "returnMethod"])).replace(/^https?:\/\/schema\.org\//i, "");
+  return [days ? `${days} дн.` : "", category].filter(Boolean).join(" · ") || undefined;
+}
+function shippingData(value: unknown) {
+  const row = objectArray(value)[0];
+  if (!row) return { text: undefined as string | undefined, amount: undefined as number | undefined };
+  const rate = objectArray(row.shippingRate)[0] || objectArray(row.shippingRateSettings)[0] || {};
+  const amount = number(valueAt(rate, ["value", "price", "amount"]));
+  const currency = clean(valueAt(rate, ["currency", "priceCurrency"]));
+  const destination = objectArray(row.shippingDestination)[0] || {};
+  const country = clean(valueAt(destination, ["addressCountry", "name"]));
+  const parts = [amount ? `${amount}${currency ? ` ${currency}` : ""}` : "", country ? `до ${country}` : ""].filter(Boolean);
+  return { text: parts.length ? `доставка ${parts.join(" · ")}` : undefined, amount };
+}
+
 function productObjectsFromJson(root: unknown): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
   let visited = 0;
@@ -147,8 +194,11 @@ function parseStructuredProduct(html: string, baseUrl: string, sellerType: Selle
     const currency = clean(valueAt(offers, ["priceCurrency", "currency"]) ?? valueAt(obj, ["priceCurrency", "currency"])).toUpperCase();
     const imageRaw = valueAt(obj, ["image", "imageUrl", "thumbnailUrl"]);
     const imageCandidate = Array.isArray(imageRaw) ? imageRaw[0] : imageRaw;
-    const seller = objectArray(offers.seller)[0] || {};
-    const sellerName = clean(valueAt(seller, ["name"]) || valueAt(brandObj, ["name"]));
+    const seller = objectArray(offers.seller)[0] || objectArray(obj.seller)[0] || {};
+    const sellerAggregate = objectArray(seller.aggregateRating)[0] || objectArray(seller.rating)[0] || {};
+    const sellerName = clean(valueAt(seller, ["name", "sellerName", "storeName"]) || valueAt(brandObj, ["name"]));
+    const shipping = shippingData(offers.shippingDetails || offers.shipping);
+    const variants = productVariantSignals(`${title} ${clean(valueAt(obj, ["sku", "mpn", "model"]))} ${clean(valueAt(obj, ["color"]))}`);
     const candidate: ParsedProduct = {
       title: title || undefined,
       price,
@@ -158,6 +208,16 @@ function parseStructuredProduct(html: string, baseUrl: string, sellerType: Selle
       condition: conditionFrom(`${title} ${clean(offers.itemCondition)}`, sellerType),
       rating: rating(valueAt(aggregate, ["ratingValue", "rating"])),
       reviewCount: count(valueAt(aggregate, ["reviewCount", "ratingCount"])),
+      delivery: shipping.text,
+      shippingCost: shipping.amount,
+      availability: availabilityText(valueAt(offers, ["availability", "stockStatus"])),
+      sellerRating: rating(valueAt(sellerAggregate, ["ratingValue", "rating"])),
+      sellerReviewCount: count(valueAt(sellerAggregate, ["reviewCount", "ratingCount"])),
+      sellerSince: clean(valueAt(seller, ["foundingDate", "memberSince", "createdAt"])) || undefined,
+      returnPolicy: returnPolicyText(valueAt(offers, ["hasMerchantReturnPolicy", "merchantReturnPolicy"])),
+      sku: clean(valueAt(obj, ["sku", "mpn", "model", "productId"])) || variants.skus[0],
+      color: clean(valueAt(obj, ["color"])) || variants.colors[0],
+      regionVersion: clean(valueAt(obj, ["region", "countryOfOrigin"])) || variants.regions[0],
     };
     const candidateScore = Number(Boolean(candidate.title)) * 4 + Number(Boolean(candidate.price)) * 5 + Number(Boolean(candidate.imageUrl)) * 2 + Number(Boolean(candidate.rating));
     const bestScore = Number(Boolean(best.title)) * 4 + Number(Boolean(best.price)) * 5 + Number(Boolean(best.imageUrl)) * 2 + Number(Boolean(best.rating));
@@ -190,7 +250,7 @@ async function nbuRate(currency: string): Promise<number | undefined> {
       signal: controller.signal,
       headers: { Accept: "application/json", "User-Agent": UA },
       next: { revalidate: 3600 },
-    });
+    } as RequestInit & { next?: { revalidate: number } });
     if (!response.ok) return undefined;
     const rows = await response.json() as { rate?: number }[];
     const rate = Number(rows?.[0]?.rate);
@@ -283,9 +343,20 @@ export async function importProductFromUrl(rawUrl: string): Promise<ImportedProd
       condition: parsed.condition || (sellerType === "private" ? "used" : "new"),
       price: priceUah,
       currency: "UAH",
-      delivery: sellerType === "international" ? "уточнити на сторінці товару" : "дивись на сторінці товару",
+      delivery: parsed.delivery || (sellerType === "international" ? "уточнити на сторінці товару" : "дивись на сторінці товару"),
+      availability: parsed.availability,
+      shippingCost: parsed.shippingCost && currency && rate ? Math.round(parsed.shippingCost * rate) : undefined,
       warranty: sellerType === "private" ? "уточнити" : "дивись на сторінці товару",
+      returnPolicy: parsed.returnPolicy,
       trusted: false,
+      sellerRating: parsed.sellerRating,
+      sellerReviewCount: parsed.sellerReviewCount,
+      sellerSince: parsed.sellerSince,
+      sku: parsed.sku,
+      color: parsed.color,
+      regionVersion: parsed.regionVersion,
+      originalPrice: currency !== "UAH" ? parsed.price : undefined,
+      originalCurrency: currency !== "UAH" ? currency : undefined,
       url: finalUrl,
       imageUrl: parsed.imageUrl,
       source: identified.id,

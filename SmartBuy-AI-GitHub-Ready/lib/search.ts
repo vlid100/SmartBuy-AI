@@ -1,6 +1,7 @@
 import { products as previewProducts } from "@/lib/mock-data";
 import { getSourceLinks, sourceCounts } from "@/lib/source-registry";
 import { dedupeLiveOffers, groupLiveOffers, searchUkraineLive } from "@/lib/live-market";
+import { searchInternationalLive } from "@/lib/international-market";
 import type { MarketCoverage, Offer, Product, SearchApiResponse } from "@/lib/types";
 import { parseSmartIntent, rankProductsForIntent } from "@/lib/smart-intent";
 import { snapshotProducts } from "@/lib/persistence";
@@ -83,17 +84,39 @@ export async function searchProducts(query: string, category = "", maxPrice?: nu
   const effectiveCondition: ConditionFilter = condition === "all" && intent?.condition && intent.condition !== "all" ? intent.condition : condition;
   const sourceLinks = filterSourceLinks(effectiveQuery, effectiveScope);
 
-  if (effectiveScope === "international") {
-    return {
-      query, count: 0, results: [], mode: "hybrid", provider: "AliExpress · Temu · Amazon",
-      warning: "AliExpress, Temu та Amazon відкривають точний запит напряму. SmartBuy не показує вигадані міжнародні ціни: автоматичне порівняння з доставкою з’явиться лише після надійного офіційного каналу даних.",
-      coverage: makeCoverage([]), sourceLinks, smart: intent,
-    };
-  }
-
   if (query.trim()) {
+    if (effectiveScope === "international") {
+      const international = await searchInternationalLive(effectiveQuery.trim());
+      const deduped = dedupeLiveOffers(international.offers);
+      const grouped = groupLiveOffers(deduped.offers, effectiveQuery.trim(), true);
+      let results = filterProducts(grouped, effectiveQuery, effectiveCategory, effectiveMaxPrice, effectiveScope, effectiveCondition, false);
+      if (intent) results = rankProductsForIntent(results, intent);
+      const ok = international.statuses.filter(status => status.state === "ok").length;
+      const blocked = international.statuses.filter(status => status.state === "blocked").length;
+      const quality = {
+        originalQuery: query, normalizedQuery: effectiveQuery, queryChanged: effectiveQuery.toLowerCase() !== rawEffectiveQuery.trim().toLowerCase(),
+        rawOfferCount: international.offers.length, uniqueOfferCount: deduped.offers.length, duplicateOffersRemoved: deduped.removed,
+        productGroupCount: grouped.length, highConfidenceGroupCount: grouped.filter(product => (product.grouping?.confidence || 0) >= 90).length,
+        ambiguousGroupCount: grouped.filter(product => (product.grouping?.confidence || 0) > 0 && (product.grouping?.confidence || 0) < 78).length,
+        identityCoverage: grouped.length ? Math.round((grouped.filter(product => Boolean(product.grouping?.identityKey)).length / grouped.length) * 100) : 0,
+        averageGroupingConfidence: grouped.length ? Math.round(grouped.reduce((sum, product) => sum + (product.grouping?.confidence || 0), 0) / grouped.length) : 0,
+      };
+      if (results.length) await snapshotProducts(results);
+      return {
+        query, count: results.length, results, mode: "hybrid", provider: "International Live · AliExpress · Temu · Amazon",
+        warning: results.length
+          ? `International Live: ${ok} з 3 джерел дали підтверджені картки. Оригінальна валюта збережена, ціна нормалізована в гривню; доставка й наявність підтягуються лише коли майданчик реально віддає ці поля.`
+          : `Міжнародні майданчики перевірені автоматично, але підтверджених карток не отримано${blocked ? ` · ${blocked} джерел заблокували серверний доступ` : ""}. Прямі посилання нижче залишаються доступними — SmartBuy не обходить CAPTCHA і не вигадує ціни.`,
+        coverage: makeCoverage(results), sourceLinks, sourceStatuses: international.statuses, smart: intent, quality,
+      };
+    }
+
     const liveMode = effectiveScope === "private" ? "private" : effectiveScope === "all" ? "all" : "stores";
-    const live = await searchUkraineLive(effectiveQuery.trim(), liveMode);
+    const [ukraine, international] = await Promise.all([
+      searchUkraineLive(effectiveQuery.trim(), liveMode),
+      effectiveScope === "all" ? searchInternationalLive(effectiveQuery.trim()) : Promise.resolve({ offers: [] as Offer[], statuses: [] }),
+    ]);
+    const live = { offers: [...ukraine.offers, ...international.offers], statuses: [...ukraine.statuses, ...international.statuses] };
     const deduped = dedupeLiveOffers(live.offers);
     const grouped = groupLiveOffers(deduped.offers, effectiveQuery.trim(), true);
     const groupingScores = grouped.map(product => product.grouping?.confidence || 0);
@@ -135,7 +158,7 @@ export async function searchProducts(query: string, category = "", maxPrice?: nu
         ? `Приватні оголошення${conditionLabel} · OLX / Shafa авто-проба`
         : effectiveScope === "ukraine"
           ? `Магазини України${conditionLabel} · ${sourceCounts.stable} стабільні + до ${sourceCounts.probe} пробних джерел`
-          : `Весь ринок${conditionLabel}: магазини + приватні оголошення + 3 міжнародні майданчики`;
+          : `Весь ринок${conditionLabel}: магазини + приватні оголошення + International Live`;
 
     let warning: string | undefined;
     if (!results.length) {

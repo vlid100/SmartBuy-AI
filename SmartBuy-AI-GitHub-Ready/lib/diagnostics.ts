@@ -2,8 +2,9 @@ import type { DiagnosticCheck, DiagnosticsResponse, SourceSearchStatus } from "@
 import { getSupabaseAdmin, getSupabaseServerConfig } from "@/lib/supabase-server";
 import { sourceCapabilitySummary, sourceCounts } from "@/lib/source-registry";
 import { searchSource, stableLiveSources } from "@/lib/live-market";
+import { pushConfigured } from "@/lib/push";
 
-const VERSION = "4.0.1";
+const VERSION = "5.0.0";
 
 const requiredTables = [
   ["smartbuy_products", "product_key"],
@@ -12,6 +13,8 @@ const requiredTables = [
   ["smartbuy_saved_searches", "id"],
   ["smartbuy_notifications", "id"],
   ["smartbuy_purchase_workspace", "id"],
+  ["smartbuy_push_subscriptions", "id"],
+  ["smartbuy_server_events", "id"],
 ] as const;
 
 function safeError(error: unknown) {
@@ -99,6 +102,12 @@ export async function buildDiagnostics(deep = false): Promise<DiagnosticsRespons
     id: "source-registry", label: "Реєстр джерел", status: sourceRegistryOk ? "ok" : "error",
     summary: `${sourceCounts.ukraine} українських + ${sourceCounts.international} міжнародних джерел`,
     detail: `${sourceCounts.stable} стабільних · ${sourceCounts.probe} пробних · ${sourceCounts.private} приватних · середнє покриття можливостей ${capabilitySummary.averageScore}/100.`,
+  });
+
+  checks.push({
+    id: "web-push", label: "Web Push", status: pushConfigured() ? "ok" : "warn",
+    summary: pushConfigured() ? "VAPID налаштований" : "Потрібні VAPID ключі",
+    detail: pushConfigured() ? "Service worker може отримувати push навіть коли вкладка закрита." : "Додай WEB_PUSH_PUBLIC_KEY, WEB_PUSH_PRIVATE_KEY і WEB_PUSH_SUBJECT у Vercel.",
   });
 
   checks.push({

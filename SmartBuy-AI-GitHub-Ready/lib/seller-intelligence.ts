@@ -20,6 +20,9 @@ export type SellerTrustProfile = {
   deliveryScore: number;
   paymentLabel: string;
   paymentScore: number;
+  sellerRatingLabel: string;
+  sellerHistoryLabel: string;
+  returnLabel: string;
   strengths: SellerSignal[];
   checks: SellerSignal[];
 };
@@ -78,10 +81,34 @@ function paymentProfile(offer: Offer) {
   return { score: 58, label: "Перевір спосіб оплати на сайті продавця", tone: "neutral" as const };
 }
 
+function sellerHistoryDays(offer: Offer) {
+  if (offer.sellerAgeDays && offer.sellerAgeDays > 0) return offer.sellerAgeDays;
+  if (!offer.sellerSince) return undefined;
+  let parsed = Date.parse(offer.sellerSince);
+  if (!Number.isFinite(parsed)) {
+    const year = Number(String(offer.sellerSince).match(/\b(19\d{2}|20\d{2})\b/)?.[1] || 0);
+    if (year >= 1990 && year <= new Date().getFullYear()) parsed = Date.UTC(year, 0, 1);
+  }
+  if (!Number.isFinite(parsed)) return undefined;
+  const days = Math.floor((Date.now() - parsed) / 86_400_000);
+  return days > 0 && days < 36500 ? days : undefined;
+}
+
+function sellerDataProfile(offer: Offer) {
+  const rating = offer.sellerRating;
+  const reviews = offer.sellerReviewCount || 0;
+  const ageDays = sellerHistoryDays(offer);
+  const ratingLabel = rating ? `${rating.toFixed(1)}/5${reviews ? ` · ${reviews.toLocaleString("uk-UA")} відг.` : ""}` : reviews ? `${reviews.toLocaleString("uk-UA")} відгуків` : "рейтинг не отримано";
+  const historyLabel = ageDays ? (ageDays >= 730 ? `${Math.floor(ageDays / 365)}+ роки` : ageDays >= 365 ? "1+ рік" : `${Math.max(1, Math.floor(ageDays / 30))} міс.`) : offer.sellerSince || "історія не отримана";
+  const returnLabel = offer.returnPolicy || "умови повернення не отримані";
+  return { rating, reviews, ageDays, ratingLabel, historyLabel, returnLabel };
+}
+
 export function sellerTrustProfile(offer: Offer, median: number | null): SellerTrustProfile {
   const warranty = warrantyProfile(offer);
   const delivery = deliveryProfile(offer);
   const payment = paymentProfile(offer);
+  const sellerData = sellerDataProfile(offer);
   const match = Math.max(0, Math.min(100, Number(offer.matchConfidence || 0)));
 
   let score = 44;
@@ -103,6 +130,24 @@ export function sellerTrustProfile(offer: Offer, median: number | null): SellerT
     score -= 8;
     checks.push({ label: "Приватна угода", detail: "Для приватних оголошень SmartBuy радить перевірку товару до повної оплати.", tone: "neutral" });
   }
+
+  if (sellerData.rating) {
+    if (sellerData.rating >= 4.7) { score += 10; strengths.push({ label: `Рейтинг продавця ${sellerData.rating.toFixed(1)}/5`, detail: sellerData.reviews ? `${sellerData.reviews.toLocaleString("uk-UA")} відгуків у доступних даних майданчика.` : "Майданчик віддає високий рейтинг продавця.", tone: "good" }); }
+    else if (sellerData.rating >= 4.2) { score += 6; strengths.push({ label: `Рейтинг продавця ${sellerData.rating.toFixed(1)}/5`, detail: "Позитивний сигнал, але переглянь свіжі негативні відгуки.", tone: "good" }); }
+    else if (sellerData.rating < 3.6) { score -= 15; checks.push({ label: `Низький рейтинг продавця ${sellerData.rating.toFixed(1)}/5`, detail: "Переглянь причини негативних оцінок перед оплатою.", tone: "bad" }); }
+  } else checks.push({ label: "Немає рейтингу продавця", detail: "SmartBuy не отримав рейтинг саме продавця з цієї сторінки. Це не означає, що рейтинг відсутній на сайті.", tone: "neutral" });
+
+  if (sellerData.reviews >= 500) score += 7;
+  else if (sellerData.reviews >= 50) score += 4;
+  else if (sellerData.reviews > 0 && sellerData.reviews < 5) checks.push({ label: "Мало відгуків продавця", detail: `Доступно лише ${sellerData.reviews} оцінок/відгуків продавця.`, tone: "warn" });
+
+  if (sellerData.ageDays != null) {
+    if (sellerData.ageDays >= 730) { score += 6; strengths.push({ label: "Тривала історія продавця", detail: sellerData.historyLabel, tone: "good" }); }
+    else if (offer.sellerType === "private" && sellerData.ageDays < 30) { score -= 12; checks.push({ label: "Новий профіль продавця", detail: `Історія профілю близько ${sellerData.ageDays} дн. Це лише сигнал для додаткової перевірки, не висновок про продавця.`, tone: "warn" }); }
+  }
+
+  if (offer.returnPolicy) { score += 5; strengths.push({ label: "Умови повернення знайдено", detail: offer.returnPolicy, tone: "good" }); }
+  else checks.push({ label: "Повернення не підтверджене", detail: "Перевір строк і умови повернення на сторінці продавця/майданчика.", tone: "neutral" });
 
   if (match >= 98) {
     score += 8;
@@ -147,6 +192,9 @@ export function sellerTrustProfile(offer: Offer, median: number | null): SellerT
     warrantyLabel: warranty.label, warrantyScore: warranty.score,
     deliveryLabel: delivery.label, deliveryScore: delivery.score,
     paymentLabel: payment.label, paymentScore: payment.score,
-    strengths: strengths.slice(0, 4), checks: checks.slice(0, 5),
+    sellerRatingLabel: sellerData.ratingLabel,
+    sellerHistoryLabel: sellerData.historyLabel,
+    returnLabel: sellerData.returnLabel,
+    strengths: strengths.slice(0, 6), checks: checks.slice(0, 7),
   };
 }

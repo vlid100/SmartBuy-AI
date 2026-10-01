@@ -32,9 +32,9 @@ const ukrainianSources: SourceDef[] = [
 ];
 
 const internationalSources: SourceDef[] = [
-  { id: "aliexpress", name: "AliExpress", kind: "international", label: "Закордон", access: "direct", buildUrl: q => `https://www.aliexpress.com/wholesale?SearchText=${enc(q)}` },
-  { id: "temu", name: "Temu", kind: "international", label: "Закордон", access: "direct", buildUrl: q => `https://www.temu.com/search_result.html?search_key=${enc(q)}` },
-  { id: "amazon", name: "Amazon", kind: "international", label: "Закордон", access: "direct", buildUrl: q => `https://www.amazon.com/s?k=${enc(q)}` },
+  { id: "aliexpress", name: "AliExpress", kind: "international", label: "Закордон · live best-effort", access: "probe", buildUrl: q => `https://www.aliexpress.com/wholesale?SearchText=${enc(q)}` },
+  { id: "temu", name: "Temu", kind: "international", label: "Закордон · live best-effort", access: "probe", buildUrl: q => `https://www.temu.com/search_result.html?search_key=${enc(q)}` },
+  { id: "amazon", name: "Amazon", kind: "international", label: "Закордон · live best-effort", access: "probe", buildUrl: q => `https://www.amazon.com/s?k=${enc(q)}` },
 ];
 
 
@@ -99,6 +99,7 @@ export const sourceCounts = {
   private: ukrainianSources.filter(s => s.kind === "private").length,
   stores: ukrainianSources.filter(s => s.kind === "store" || s.kind === "aggregator").length,
   international: internationalSources.length,
+  internationalAutomatic: internationalSources.filter(s => s.access === "live" || s.access === "probe").length,
 };
 
 export const liveSourceIds = new Set(ukrainianSources.filter(s => s.access === "live").map(s => s.id));

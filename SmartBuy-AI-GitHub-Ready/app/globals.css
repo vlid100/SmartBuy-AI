@@ -214,7 +214,7 @@ button:disabled{cursor:not-allowed;opacity:.58}
 @media(max-width:760px){.offerDecisionGrid{grid-template-columns:1fr 1fr}.offerDecisionSignals{grid-template-columns:1fr}.offerDecisionAlternatives{grid-template-columns:1fr}}
 @media(max-width:460px){.offerDecisionGrid{grid-template-columns:1fr}.offerDecisionHead{align-items:center}.offerDecisionHead>strong{font-size:22px}}
 
-/* v4.0 · Fair Price Intelligence */
+/* v5.0 · Fair Price Intelligence + Production Market */
 .fairPriceCard{margin:18px 0;border:1px solid #dfe4ec;background:linear-gradient(135deg,#fbfcfa,#fff);border-radius:20px;padding:16px;box-shadow:0 10px 28px rgba(16,24,40,.04)}
 .fairPriceCard.great{border-color:#c9e7d8;background:linear-gradient(135deg,#f6fcf8,#fff)}
 .fairPriceCard.fair{border-color:#d7deeb;background:linear-gradient(135deg,#fafbfe,#fff)}

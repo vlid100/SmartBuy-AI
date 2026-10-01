@@ -11,6 +11,7 @@ const required = [
   'components/SmartBuyApp.tsx',
   'components/PwaManager.tsx',
   'lib/live-market.ts',
+  'lib/international-market.ts',
   'lib/matching.ts',
   'lib/source-router.ts',
   'lib/query-expansion.ts',
@@ -24,6 +25,15 @@ const required = [
   'lib/fair-price.ts',
   'lib/diagnostics.ts',
   'public/sw.js',
+  'lib/push.ts',
+  'app/api/push/route.ts',
+  'lib/rate-limit.ts',
+  'lib/server-log.ts',
+  'app/privacy/page.tsx',
+  'app/terms/page.tsx',
+  'app/robots.ts',
+  'app/sitemap.ts',
+  'supabase/v5.0_production.sql',
   'supabase/update_to_latest.sql',
   'vercel.json',
 ];
@@ -35,8 +45,8 @@ if (missing.length) {
 }
 
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-if (pkg.version !== '4.0.1') {
-  console.error(`SmartBuy smoke-check: package version must be 4.0.1, got ${pkg.version}`);
+if (pkg.version !== '5.0.0') {
+  console.error(`SmartBuy smoke-check: package version must be 5.0.0, got ${pkg.version}`);
   process.exit(1);
 }
 
@@ -55,8 +65,11 @@ const batchImportRouteSource = fs.readFileSync(path.join(root, 'app/api/import-p
 const importIntelligenceSource = fs.readFileSync(path.join(root, 'lib/import-intelligence.ts'), 'utf8');
 const offerDecisionSource = fs.readFileSync(path.join(root, 'lib/offer-decision.ts'), 'utf8');
 const fairPriceSource = fs.readFileSync(path.join(root, 'lib/fair-price.ts'), 'utf8');
-if (!typesSource.includes('\"assistedImport\"') || !typesSource.includes('ProductBatchImportResponse') || !registrySource.includes('identifySourceUrl') || !importRouteSource.includes('importProductFromUrl') || !batchImportRouteSource.includes('Promise.allSettled') || !importIntelligenceSource.includes('mergeImportedProductGroup') || !offerDecisionSource.includes('rankOfferDecisions') || !fairPriceSource.includes('buildFairPriceInsight') || !fairPriceSource.includes('positionAgainstFairPrice')) {
-  console.error('SmartBuy smoke-check: v4.0 Fair Price / decision / import wiring is incomplete.');
+const internationalSource = fs.readFileSync(path.join(root, 'lib/international-market.ts'), 'utf8');
+const serviceWorkerSource = fs.readFileSync(path.join(root, 'public/sw.js'), 'utf8');
+const pushSource = fs.readFileSync(path.join(root, 'lib/push.ts'), 'utf8');
+if (!typesSource.includes('\"assistedImport\"') || !typesSource.includes('ProductBatchImportResponse') || !registrySource.includes('identifySourceUrl') || !importRouteSource.includes('importProductFromUrl') || !batchImportRouteSource.includes('Promise.allSettled') || !importIntelligenceSource.includes('mergeImportedProductGroup') || !offerDecisionSource.includes('rankOfferDecisions') || !fairPriceSource.includes('buildFairPriceInsight') || !fairPriceSource.includes('positionAgainstFairPrice') || !internationalSource.includes('searchInternationalLive') || !serviceWorkerSource.includes('notificationclick') || !serviceWorkerSource.includes('addEventListener(\"push\"') || !pushSource.includes('sendPushForHash')) {
+  console.error('SmartBuy smoke-check: v5.0 market / push / production wiring is incomplete.');
   process.exit(1);
 }
 

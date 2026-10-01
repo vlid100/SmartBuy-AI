@@ -1,6 +1,7 @@
 import { getSupabaseAdmin } from "@/lib/supabase-server";
 import { hashSyncKey } from "@/lib/persistence";
 import type { SmartNotification, SmartNotificationKind } from "@/lib/types";
+import { sendPushForHash } from "@/lib/push";
 
 type CreateNotificationInput = {
   syncKeyHash: string;
@@ -34,7 +35,7 @@ function fromRow(row: any): SmartNotification {
 export async function createNotificationForHash(input: CreateNotificationInput) {
   const db = getSupabaseAdmin();
   if (!db) return { cloud: false };
-  const { error } = await db.from("smartbuy_notifications").upsert({
+  const { data, error } = await db.from("smartbuy_notifications").upsert({
     sync_key_hash: input.syncKeyHash,
     dedupe_key: input.dedupeKey,
     kind: input.kind,
@@ -45,7 +46,11 @@ export async function createNotificationForHash(input: CreateNotificationInput) 
     price_uah: input.price ?? null,
     previous_price_uah: input.previousPrice ?? null,
     url: input.url || null,
-  }, { onConflict: "sync_key_hash,dedupe_key", ignoreDuplicates: true });
+  }, { onConflict: "sync_key_hash,dedupe_key", ignoreDuplicates: true }).select("id");
+  // Push only for a newly inserted notification. A duplicate dedupe_key does not re-alert the user.
+  if (!error && Array.isArray(data) && data.length) {
+    await sendPushForHash(input.syncKeyHash, { title: input.title, body: input.body, url: input.url || "/?tab=notifications", tag: input.dedupeKey, kind: input.kind });
+  }
   return { cloud: !error, error: error?.message };
 }
 

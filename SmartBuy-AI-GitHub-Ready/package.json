@@ -1,6 +1,6 @@
 {
   "name": "smartbuy-ai",
-  "version": "4.0.1",
+  "version": "5.0.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "tsc --noEmit",
     "check": "tsc --noEmit",
-    "smoke": "node scripts/smoke-check.mjs"
+    "smoke": "node scripts/smoke-check.mjs",
+    "vapid": "node scripts/generate-vapid.mjs",
+    "audit": "node scripts/feature-audit.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",
@@ -16,12 +18,14 @@
     "next": "16.3.3",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "cheerio": "^1.1.2"
+    "cheerio": "^1.1.2",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
     "@types/react": "^19.0.3",
     "@types/react-dom": "^19.0.2",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "@types/web-push": "^3.6.4"
   }
 }
