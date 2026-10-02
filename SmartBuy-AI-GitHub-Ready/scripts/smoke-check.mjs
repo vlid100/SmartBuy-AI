@@ -45,8 +45,8 @@ if (missing.length) {
 }
 
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-if (pkg.version !== '5.0.0') {
-  console.error(`SmartBuy smoke-check: package version must be 5.0.0, got ${pkg.version}`);
+if (pkg.version !== '5.0.1') {
+  console.error(`SmartBuy smoke-check: package version must be 5.0.1, got ${pkg.version}`);
   process.exit(1);
 }
 
@@ -70,6 +70,15 @@ const serviceWorkerSource = fs.readFileSync(path.join(root, 'public/sw.js'), 'ut
 const pushSource = fs.readFileSync(path.join(root, 'lib/push.ts'), 'utf8');
 if (!typesSource.includes('\"assistedImport\"') || !typesSource.includes('ProductBatchImportResponse') || !registrySource.includes('identifySourceUrl') || !importRouteSource.includes('importProductFromUrl') || !batchImportRouteSource.includes('Promise.allSettled') || !importIntelligenceSource.includes('mergeImportedProductGroup') || !offerDecisionSource.includes('rankOfferDecisions') || !fairPriceSource.includes('buildFairPriceInsight') || !fairPriceSource.includes('positionAgainstFairPrice') || !internationalSource.includes('searchInternationalLive') || !serviceWorkerSource.includes('notificationclick') || !serviceWorkerSource.includes('addEventListener(\"push\"') || !pushSource.includes('sendPushForHash')) {
   console.error('SmartBuy smoke-check: v5.0 market / push / production wiring is incomplete.');
+  process.exit(1);
+}
+
+
+const appSource = fs.readFileSync(path.join(root, 'components/SmartBuyApp.tsx'), 'utf8');
+const liveMarketSource = fs.readFileSync(path.join(root, 'lib/live-market.ts'), 'utf8');
+const searchRouteSource = fs.readFileSync(path.join(root, 'app/api/search/route.ts'), 'utf8');
+if (!appSource.includes('const searchTimeoutMs = 40000') || !appSource.includes('setCoverage({ totalOffers: 0') || !liveMarketSource.includes('SMARTBUY_SOURCE_TOTAL_TIMEOUT_MS') || !liveMarketSource.includes('SMARTBUY_PRIORITY_SOURCE_TOTAL_TIMEOUT_MS') || !internationalSource.includes('SMARTBUY_INTERNATIONAL_TOTAL_TIMEOUT_MS') || !searchRouteSource.includes('export const maxDuration = 45')) {
+  console.error('SmartBuy smoke-check: v5.0.1 search stability guards are incomplete.');
   process.exit(1);
 }
 

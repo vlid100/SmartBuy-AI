@@ -1,4 +1,12 @@
-# SmartBuy AI v5.0 — Production Market & Web Push
+# SmartBuy AI v5.0.1 — Search Stability Fix
+
+v5.0.1 keeps the v5.0 production feature set and fixes long-running market searches.
+
+Search stability changes:
+- client safety timeout increased while source-level budgets prevent one slow site from blocking the market;
+- OLX/Rozetka and probe sources have absolute per-source deadlines;
+- international fetch + enrichment share one total deadline;
+- timeout/error clears stale coverage counters, preventing `0 моделей · old пропозицій`.
 
 v5.0 is a consolidation release: instead of adding another isolated card, it closes the remaining production gaps around live sources, seller data, variant dedupe, Web Push and deployment hardening.
 

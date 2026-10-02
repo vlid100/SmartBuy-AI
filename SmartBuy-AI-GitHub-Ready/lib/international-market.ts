@@ -262,10 +262,12 @@ function mergeInternationalOffer(base: Offer, extra: Offer): Offer {
   };
 }
 
-async function enrichInternationalOffer(source: IntlSource, offer: Offer): Promise<Offer> {
+async function enrichInternationalOffer(source: IntlSource, offer: Offer, timeoutOverrideMs?: number): Promise<Offer> {
   if (!offer.url || process.env.SMARTBUY_INTERNATIONAL_ENRICH_ENABLED === "false") return offer;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), Math.max(1600, Math.min(Number(process.env.SMARTBUY_INTERNATIONAL_ENRICH_TIMEOUT_MS || 3600), 6500)));
+  const configured = Math.max(700, Math.min(Number(process.env.SMARTBUY_INTERNATIONAL_ENRICH_TIMEOUT_MS || 1800), 3500));
+  const effectiveTimeout = Math.max(500, Math.min(timeoutOverrideMs ?? configured, configured));
+  const timeout = setTimeout(() => controller.abort(), effectiveTimeout);
   try {
     const response = await fetch(offer.url, { signal: controller.signal, redirect: "follow", cache: "no-store", headers: {
       "user-agent": UA, "accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8", "accept-language": "en-US,en;q=0.9,uk;q=0.7", "cache-control": "no-cache",
@@ -292,10 +294,11 @@ async function enrichInternationalOffer(source: IntlSource, offer: Offer): Promi
   } catch { return offer; } finally { clearTimeout(timeout); }
 }
 
-async function enrichInternationalOffers(source: IntlSource, offers: Offer[]) {
+async function enrichInternationalOffers(source: IntlSource, offers: Offer[], budgetMs?: number) {
   const limit = Math.max(0, Math.min(Number(process.env.SMARTBUY_INTERNATIONAL_ENRICH_LIMIT || 1), 3, offers.length));
   if (!limit) return offers;
-  const head = await Promise.all(offers.slice(0, limit).map(offer => enrichInternationalOffer(source, offer)));
+  const perOfferTimeout = budgetMs ? Math.max(500, Math.min(budgetMs, 1800)) : undefined;
+  const head = await Promise.all(offers.slice(0, limit).map(offer => enrichInternationalOffer(source, offer, perOfferTimeout)));
   return [...head, ...offers.slice(limit)];
 }
 
@@ -311,7 +314,13 @@ function dedupe(items: Offer[], query: string) {
 }
 
 async function searchSource(source: IntlSource, query: string): Promise<IntlSourceResult> {
-  const started = Date.now(); const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), Number(process.env.SMARTBUY_INTERNATIONAL_TIMEOUT_MS || 5200));
+  const started = Date.now();
+  const totalBudgetMs = Math.max(2200, Math.min(Number(process.env.SMARTBUY_INTERNATIONAL_TOTAL_TIMEOUT_MS || 6000), 8000));
+  const deadline = started + totalBudgetMs;
+  const controller = new AbortController();
+  const configuredFetch = Math.max(1400, Math.min(Number(process.env.SMARTBUY_INTERNATIONAL_TIMEOUT_MS || 4200), 6000));
+  const fetchBudget = Math.max(1000, Math.min(configuredFetch, totalBudgetMs - 700));
+  const timeout = setTimeout(() => controller.abort(), fetchBudget);
   try {
     const url = source.buildUrl(query);
     const response = await fetch(url, { signal: controller.signal, redirect: "follow", cache: "no-store", headers: {
@@ -322,7 +331,9 @@ async function searchSource(source: IntlSource, query: string): Promise<IntlSour
     const html = await response.text();
     if (BLOCK_PATTERNS.test(html.slice(0, 220_000))) return { offers: [], status: { id: source.id, name: source.name, state: "blocked", offerCount: 0, durationMs: Date.now() - started, message: "anti-bot / captcha · direct link remains available", tier: "probe" } };
     const raw = [...await parseCards(html, source, response.url || url), ...await parseStructured(html, source, response.url || url)];
-    const offers = await enrichInternationalOffers(source, dedupe(raw, query));
+    const baseOffers = dedupe(raw, query);
+    const enrichBudget = Math.max(0, deadline - Date.now() - 150);
+    const offers = enrichBudget >= 600 ? await enrichInternationalOffers(source, baseOffers, enrichBudget) : baseOffers;
     return { offers, status: { id: source.id, name: source.name, state: offers.length ? "ok" : "empty", offerCount: offers.length, durationMs: Date.now() - started, message: offers.length ? "live best-effort" : "page responded, no strict matching cards", tier: "probe", attempts: 1, queryUsed: query, queryVariantsTried: 1 } };
   } catch (error) {
     const message = error instanceof Error ? error.message : "network error"; const timed = /abort|timeout/i.test(message);

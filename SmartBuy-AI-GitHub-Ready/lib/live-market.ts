@@ -482,10 +482,12 @@ function writeCache(source: LiveSource, query: string, value: SourceResult, phas
   }
 }
 
-async function enrichPriorityOffer(source: LiveSource, offer: Offer): Promise<Offer> {
+async function enrichPriorityOffer(source: LiveSource, offer: Offer, timeoutOverrideMs?: number): Promise<Offer> {
   if (!offer.url || process.env.SMARTBUY_SELLER_ENRICH_ENABLED === "false") return offer;
   try {
-    const response = await fetchWithTimeout(offer.url, Math.max(1200, Math.min(Number(process.env.SMARTBUY_SELLER_ENRICH_TIMEOUT_MS || 2200), 4000)));
+    const configured = Math.max(700, Math.min(Number(process.env.SMARTBUY_SELLER_ENRICH_TIMEOUT_MS || 1800), 3500));
+    const effectiveTimeout = Math.max(500, Math.min(timeoutOverrideMs ?? configured, configured));
+    const response = await fetchWithTimeout(offer.url, effectiveTimeout);
     if (!response.ok) return offer;
     const html = await response.text();
     if (BLOCK_PATTERNS.test(html.slice(0, 160_000))) return offer;
@@ -511,12 +513,13 @@ async function enrichPriorityOffer(source: LiveSource, offer: Offer): Promise<Of
   } catch { return offer; }
 }
 
-async function enrichPriorityOffers(source: LiveSource, offers: Offer[]) {
+async function enrichPriorityOffers(source: LiveSource, offers: Offer[], budgetMs?: number) {
   // Deeper page enrichment is intentionally small: it improves seller signals for the most
   // useful OLX/Rozetka results without multiplying Vercel latency for every marketplace card.
   if (!/^(olx|rozetka)$/i.test(source.id)) return offers;
   const limit = Math.max(0, Math.min(Number(process.env.SMARTBUY_SELLER_ENRICH_LIMIT || 2), 4, offers.length));
-  const head = await Promise.all(offers.slice(0, limit).map(offer => enrichPriorityOffer(source, offer)));
+  const perOfferTimeout = budgetMs ? Math.max(500, Math.min(budgetMs, 1800)) : undefined;
+  const head = await Promise.all(offers.slice(0, limit).map(offer => enrichPriorityOffer(source, offer, perOfferTimeout)));
   return [...head, ...offers.slice(limit)];
 }
 
@@ -525,28 +528,43 @@ export async function searchSource(source: LiveSource, query: string, phase: Rou
   if (cached) return cached;
 
   const started = Date.now();
-  const stableTimeout = Math.max(1800, Math.min(Number(process.env.SMARTBUY_SOURCE_TIMEOUT_MS || 4300), 9000));
-  const probeTimeout = Math.max(1200, Math.min(Number(process.env.SMARTBUY_PROBE_TIMEOUT_MS || 2700), 5500));
+  const stableTimeout = Math.max(1600, Math.min(Number(process.env.SMARTBUY_SOURCE_TIMEOUT_MS || 3600), 7000));
+  const probeTimeout = Math.max(1000, Math.min(Number(process.env.SMARTBUY_PROBE_TIMEOUT_MS || 2200), 4500));
   const timeoutMs = source.tier === "stable" ? stableTimeout : probeTimeout;
-  const maxAttempts = source.tier === "stable" || /^(olx|rozetka)$/i.test(source.id) ? 2 : 1;
+  const prioritySource = /^(olx|rozetka)$/i.test(source.id);
+  const configuredBudget = prioritySource
+    ? Number(process.env.SMARTBUY_PRIORITY_SOURCE_TOTAL_TIMEOUT_MS || 6200)
+    : source.tier === "stable"
+      ? Number(process.env.SMARTBUY_SOURCE_TOTAL_TIMEOUT_MS || 5600)
+      : Number(process.env.SMARTBUY_PROBE_TOTAL_TIMEOUT_MS || 3600);
+  const phaseFactor = phase === "expanded" ? 0.82 : 1;
+  const sourceBudgetMs = Math.max(1400, Math.min(Math.round(configuredBudget * phaseFactor), 8000));
+  const deadline = started + sourceBudgetMs;
+  const remainingBudget = () => Math.max(0, deadline - Date.now());
+  const maxAttempts = source.tier === "stable" || prioritySource ? 2 : 1;
   const variants = expandSearchQuery(query, source.id);
-  const planned = variants.length ? variants : [{ query, kind: "exact" as const, reason: "точний запит" }];
+  const variantLimit = Math.max(1, Math.min(Number(process.env.SMARTBUY_MAX_QUERY_VARIANTS_PER_SOURCE || (prioritySource ? 3 : 2)), 4));
+  const planned = (variants.length ? variants : [{ query, kind: "exact" as const, reason: "точний запит" }]).slice(0, variantLimit);
   let lastMessage = "невідома помилка";
   let lastState: SourceSearchStatus["state"] = "empty";
   let networkAttempts = 0;
   let variantsTried = 0;
 
-  for (let variantIndex = 0; variantIndex < planned.length; variantIndex++) {
+  variantLoop: for (let variantIndex = 0; variantIndex < planned.length; variantIndex++) {
+    if (remainingBudget() < 500) { lastState = "timeout"; lastMessage = `ліміт джерела ${sourceBudgetMs} мс`; break; }
     const variant = planned[variantIndex];
     variantsTried += 1;
     const urls = [...new Set((source.buildUrls ? source.buildUrls(variant.query) : [source.buildUrl(variant.query)]).filter(Boolean))];
 
     for (let urlIndex = 0; urlIndex < urls.length; urlIndex++) {
+      if (remainingBudget() < 500) { lastState = "timeout"; lastMessage = `ліміт джерела ${sourceBudgetMs} мс`; break variantLoop; }
       const url = urls[urlIndex];
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        if (remainingBudget() < 500) { lastState = "timeout"; lastMessage = `ліміт джерела ${sourceBudgetMs} мс`; break variantLoop; }
         networkAttempts += 1;
         try {
-          const response = await fetchWithTimeout(url, timeoutMs);
+          const requestTimeout = Math.max(450, Math.min(timeoutMs, remainingBudget()));
+          const response = await fetchWithTimeout(url, requestTimeout);
           const durationMs = Date.now() - started;
           if (response.status === 403 || response.status === 401 || response.status === 429) {
             lastState = "blocked"; lastMessage = `HTTP ${response.status}`;
@@ -573,7 +591,8 @@ export async function searchSource(source: LiveSource, query: string, phase: Rou
           ];
           let offers = dedupeOffers(parsed, query, Number(process.env.SMARTBUY_MAX_PER_SOURCE || 12));
           if (offers.length) {
-            offers = await enrichPriorityOffers(source, offers);
+            const enrichBudget = Math.max(0, remainingBudget() - 200);
+            if (enrichBudget >= 650) offers = await enrichPriorityOffers(source, offers, enrichBudget);
             const expanded = variantIndex > 0;
             const result: SourceResult = {
               offers,
@@ -677,7 +696,7 @@ export async function searchUkraineLive(query: string, mode: LiveMode = "stores"
 
   const primarySources = [...stable, ...primaryProbes];
   const concurrency = Math.max(1, Math.min(Number(process.env.SMARTBUY_SOURCE_CONCURRENCY || 4), 6));
-  const primaryResults = await runPool(primarySources, concurrency, source => searchSource(source, query, "primary"));
+  const primaryResults = await runPool<LiveSource, SourceResult>(primarySources, concurrency, source => searchSource(source, query, "primary"));
   const primaryOfferCount = primaryResults.reduce((sum, item) => sum + item.offers.length, 0);
 
   const defaultTarget = mode === "private" ? 4 : 8;
@@ -688,7 +707,7 @@ export async function searchUkraineLive(query: string, mode: LiveMode = "stores"
   const shouldExpand = probesEnabled && primaryOfferCount < targetOffers && remainingProbeBudget > 0;
   const expansionSources = shouldExpand ? expansionCandidates.slice(0, remainingProbeBudget) : [];
   const expandedResults = expansionSources.length
-    ? await runPool(expansionSources, concurrency, source => searchSource(source, query, "expanded"))
+    ? await runPool<LiveSource, SourceResult>(expansionSources, concurrency, source => searchSource(source, query, "expanded"))
     : [];
 
   const settled = [...primaryResults, ...expandedResults];

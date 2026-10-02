@@ -4,6 +4,7 @@ import { applyRateLimit } from "@/lib/rate-limit";
 import { serverLog } from "@/lib/server-log";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 45;
 
 const allowedScopes: MarketScope[] = ["all", "ukraine", "private", "international"];
 const allowedConditions: ConditionFilter[] = ["all", "new", "used"];
