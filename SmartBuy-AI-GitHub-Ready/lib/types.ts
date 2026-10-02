@@ -219,6 +219,20 @@ export type MarketCoverage = {
   sourceCount: number;
 };
 
+
+export type DiscoveryHit = {
+  id: string;
+  title: string;
+  url: string;
+  snippet?: string;
+  sourceId: string;
+  sourceName: string;
+  region: MarketRegion;
+  matchConfidence?: number;
+  provider?: string;
+  queryUsed?: string;
+};
+
 export type SearchApiResponse = {
   query: string;
   count: number;
@@ -229,6 +243,7 @@ export type SearchApiResponse = {
   coverage: MarketCoverage;
   sourceLinks: SourceLink[];
   sourceStatuses?: SourceSearchStatus[];
+  discoveryHits?: DiscoveryHit[];
   smart?: SmartSearchMeta;
   quality?: SearchQualityMeta;
   // True when SmartBuy intentionally returned the offers already found instead of

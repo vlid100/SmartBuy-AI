@@ -1,4 +1,4 @@
-# SmartBuy source-use guardrails (v5.0)
+# SmartBuy source-use guardrails (v6.0)
 
 SmartBuy uses best-effort requests to public search/product pages. It does **not** bypass CAPTCHA, login walls, rate limits, robots challenges or access-control mechanisms. When a source returns 401/403/429, CAPTCHA or an anti-bot page, SmartBuy records the source as blocked and keeps a direct search link instead of inventing data.
 
@@ -15,3 +15,8 @@ Production rules implemented in code:
 - international connectors are `best-effort`: if Amazon/AliExpress/Temu block server access, SmartBuy falls back to direct links and assisted URL import.
 
 Before a public/commercial launch, the site owner should review the current Terms of Service / robots guidance for every source and disable any connector whose terms do not permit the intended automated access. Site rules can change independently of SmartBuy.
+
+
+## v6.0 Discovery Search
+
+Discovery Search separates finding a product from verifying its price. It may query a web-search provider for links limited to supported marketplace domains. It never treats a search-engine snippet as a verified price. If a marketplace blocks automated access, SmartBuy can still show the discovered product page as an unverified link. `SMARTBUY_WEB_DISCOVERY_ENABLED=false`, `SMARTBUY_DDG_FALLBACK_ENABLED=false` and `SMARTBUY_PUBLIC_TRANSLATION_ENABLED=false` disable these fallbacks.

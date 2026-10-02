@@ -8,6 +8,7 @@ import { enrichProductSpecs, specsAsText } from "@/lib/specs";
 import { enrichProductReviews } from "@/lib/review-intelligence";
 import { normalizeSearchQuery } from "@/lib/matching";
 import { queryExpansionSummary } from "@/lib/query-expansion";
+import { searchWebDiscovery } from "@/lib/web-discovery";
 
 export type MarketScope = "all" | "ukraine" | "private" | "international";
 export type ConditionFilter = "all" | "new" | "used";
@@ -111,12 +112,14 @@ export async function searchProducts(query: string, category = "", maxPrice?: nu
 
   if (query.trim()) {
     if (effectiveScope === "international") {
+      const discoveryPromise = searchWebDiscovery(effectiveQuery.trim(), "international", waveDeadline(5_000));
       let international: SearchWave;
       try {
         international = await searchInternationalLive(effectiveQuery.trim(), { deadlineAt: waveDeadline(9_500) });
       } catch {
         international = failedWave("international-wave", "International Live", "міжнародна хвиля завершилась помилкою; прямі посилання доступні");
       }
+      const discovery = await discoveryPromise.catch(() => ({ hits: [], status: { id: "web-discovery", name: "Web Discovery", state: "error" as const, offerCount: 0, durationMs: 0, message: "fallback discovery error", tier: "probe" as const }, partial: true }));
       const deduped = dedupeLiveOffers(international.offers);
       const grouped = groupLiveOffers(deduped.offers, effectiveQuery.trim(), true);
       let results = filterProducts(grouped, effectiveQuery, effectiveCategory, effectiveMaxPrice, effectiveScope, effectiveCondition, false);
@@ -134,11 +137,12 @@ export async function searchProducts(query: string, category = "", maxPrice?: nu
       let warning = results.length
         ? `International Live: ${ok} з 3 джерел дали підтверджені картки. Оригінальна валюта збережена, ціна нормалізована в гривню; доставка й наявність підтягуються лише коли майданчик реально віддає ці поля.`
         : `Міжнародні майданчики перевірені автоматично, але підтверджених карток не отримано${blocked ? ` · ${blocked} джерел заблокували серверний доступ` : ""}. Прямі посилання нижче залишаються доступними — SmartBuy не обходить CAPTCHA і не вигадує ціни.`;
-      if (international.partial) warning = appendPartialWarning(warning, results.length > 0);
+      if (!results.length && discovery.hits.length) warning = `Маркетплейси не віддали підтверджені ціни, але Discovery Search знайшов ${discovery.hits.length} релевантних сторінок товарів. Відкрий їх нижче — SmartBuy не приховує товар лише через блокування автоматичного читання.`;
+      if (international.partial || discovery.partial) warning = appendPartialWarning(warning, results.length > 0 || discovery.hits.length > 0);
       return {
-        query, count: results.length, results, mode: "hybrid", provider: "International Live · AliExpress · Temu · Amazon",
-        warning, coverage: makeCoverage(results), sourceLinks, sourceStatuses: international.statuses, smart: intent, quality,
-        partial: international.partial, durationMs: Date.now() - started,
+        query, count: results.length, results, mode: "hybrid", provider: "Discovery Search · AliExpress · Temu · Amazon",
+        warning, coverage: makeCoverage(results), sourceLinks, sourceStatuses: [...international.statuses, discovery.status], discoveryHits: discovery.hits, smart: intent, quality,
+        partial: international.partial || discovery.partial, durationMs: Date.now() - started,
       };
     }
 
@@ -147,17 +151,21 @@ export async function searchProducts(query: string, category = "", maxPrice?: nu
     const internationalPromise = effectiveScope === "all"
       ? searchInternationalLive(effectiveQuery.trim(), { deadlineAt: waveDeadline(9_000) })
       : Promise.resolve({ offers: [] as Offer[], statuses: [] as SourceSearchStatus[], partial: false });
+    const discoveryPromise = searchWebDiscovery(effectiveQuery.trim(), effectiveScope, waveDeadline(5_000));
 
-    const [ukraineSettled, internationalSettled] = await Promise.allSettled([ukrainePromise, internationalPromise]);
+    const [ukraineSettled, internationalSettled, discoverySettled] = await Promise.allSettled([ukrainePromise, internationalPromise, discoveryPromise]);
     const ukraine: SearchWave = ukraineSettled.status === "fulfilled"
       ? ukraineSettled.value
       : failedWave("ukraine-wave", "Український ринок", "одна з серверних хвиль завершилась помилкою; інші результати збережено");
     const international: SearchWave = internationalSettled.status === "fulfilled"
       ? internationalSettled.value
       : failedWave("international-wave", "International Live", "міжнародна хвиля завершилась помилкою; українські результати збережено");
+    const discovery = discoverySettled.status === "fulfilled"
+      ? discoverySettled.value
+      : { hits: [], status: { id: "web-discovery", name: "Web Discovery", state: "error" as const, offerCount: 0, durationMs: 0, message: "fallback discovery error", tier: "probe" as const }, partial: true };
 
-    const partial = ukraine.partial || international.partial || ukraineSettled.status === "rejected" || internationalSettled.status === "rejected";
-    const live = { offers: [...ukraine.offers, ...international.offers], statuses: [...ukraine.statuses, ...international.statuses] };
+    const partial = ukraine.partial || international.partial || discovery.partial || ukraineSettled.status === "rejected" || internationalSettled.status === "rejected" || discoverySettled.status === "rejected";
+    const live = { offers: [...ukraine.offers, ...international.offers], statuses: [...ukraine.statuses, ...international.statuses, discovery.status] };
     const deduped = dedupeLiveOffers(live.offers);
     const grouped = groupLiveOffers(deduped.offers, effectiveQuery.trim(), true);
     const groupingScores = grouped.map(product => product.grouping?.confidence || 0);
@@ -203,7 +211,9 @@ export async function searchProducts(query: string, category = "", maxPrice?: nu
 
     let warning: string | undefined;
     if (!results.length) {
-      if (effectiveScope === "private") {
+      if (discovery.hits.length) {
+        warning = `Discovery Search знайшов ${discovery.hits.length} релевантних сторінок товарів, але магазини не віддали достатньо даних для підтвердженої ціни. Товар не приховано — відкрий знайдені сторінки нижче.`;
+      } else if (effectiveScope === "private") {
         warning = `OLX/Shafa не дали підтверджених карток у цій серверній перевірці. SmartBuy не вигадує оголошення: відкрий точний запит нижче напряму. Перевірено ${attempted} приватних джерела.`;
       } else if (intent) {
         warning = `За розумним запитом «${effectiveQuery}» автоматичні джерела не дали достатньо точних результатів. Спробуй трохи збільшити бюджет або прибрати одну з вимог.`;
@@ -221,7 +231,7 @@ export async function searchProducts(query: string, category = "", maxPrice?: nu
 
     return {
       query, count: results.length, results, mode: "hybrid",
-      provider, warning, coverage: makeCoverage(results), sourceLinks, sourceStatuses: live.statuses, smart: intent, quality,
+      provider, warning, coverage: makeCoverage(results), sourceLinks, sourceStatuses: live.statuses, discoveryHits: discovery.hits, smart: intent, quality,
       partial, durationMs: Date.now() - started,
     };
   }

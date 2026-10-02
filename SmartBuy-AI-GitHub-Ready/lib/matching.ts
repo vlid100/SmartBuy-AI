@@ -322,6 +322,113 @@ export function evaluateTitleMatch(reference: string, candidate: string): TitleM
   return { score, reliable, hardCoverage, variantConflict, sharedTokens: shared, conflicts, reasons };
 }
 
+
+
+const SEARCH_CONCEPT_ALIASES: Record<string, string> = {
+  стійк: "rack", стойк: "rack", rack: "rack", stand: "rack",
+  рушник: "towel", полотенц: "towel", towel: "towel",
+  тримач: "holder", держател: "holder", holder: "holder",
+  підставк: "stand", подставк: "stand",
+  полиц: "shelf", полк: "shelf", shelf: "shelf",
+  взут: "shoe", обув: "shoe", shoe: "shoe",
+  органайзер: "organizer", organizer: "organizer",
+  контейнер: "container", коробк: "box", кошик: "basket", корзин: "basket",
+  ярус: "tier", рівн: "tier", уровн: "tier", tier: "tier",
+  підлог: "freestanding", напольн: "freestanding", freestand: "freestanding",
+  складн: "folding", folding: "folding",
+  ламп: "lamp", світильник: "lamp", светильник: "lamp",
+  килим: "rug", ковр: "rug", mat: "mat", rug: "rug",
+  пляшк: "bottle", бутылк: "bottle", bottle: "bottle",
+  сумк: "bag", bag: "bag", рюкзак: "backpack", backpack: "backpack",
+  щітк: "brush", щетк: "brush", brush: "brush", швабр: "mop", mop: "mop",
+  пилосос: "vacuum", пылесос: "vacuum", vacuum: "vacuum",
+  навушник: "headphones", наушник: "headphones", headphones: "headphones",
+  клавіатур: "keyboard", клавиатур: "keyboard", keyboard: "keyboard",
+  монітор: "monitor", монитор: "monitor", monitor: "monitor",
+};
+
+function searchStem(token: string) {
+  let t = token.toLowerCase().replace(/[^a-zа-яіїєґ0-9]+/giu, "");
+  if (!t) return "";
+  if (/^\d+$/.test(t) || /[a-z].*\d|\d.*[a-z]/i.test(t)) return t;
+  const endings = [
+    "ями","ами","ого","ому","ими","ій","ою","ею","ів","ев","ов","ах","ях","ий","ій","а","я","и","і","у","ю","е","о",
+    "ая","яя","ый","ий","ое","ее","ые","ие","ого","ему","ому","ами","ями","ах","ях","ов","ев","ей","а","я","ы","и","у","ю","е","о",
+    "ing","ed","es","s",
+  ];
+  for (const ending of endings) {
+    if (t.length >= ending.length + 4 && t.endsWith(ending)) { t = t.slice(0, -ending.length); break; }
+  }
+  return t;
+}
+
+function searchTokenSet(value: string) {
+  const raw = canonical(value).split(/\s+/).filter(Boolean);
+  const out = new Set<string>();
+  for (const token of raw) {
+    if (STOP.has(token)) continue;
+    const stem = searchStem(token);
+    if (stem.length >= 2) out.add(stem);
+  }
+  return out;
+}
+
+function searchConceptSet(value: string) {
+  const out = new Set<string>();
+  for (const token of searchTokenSet(value)) {
+    for (const [stem, concept] of Object.entries(SEARCH_CONCEPT_ALIASES)) {
+      if (token === stem || token.startsWith(stem) || stem.startsWith(token)) out.add(concept);
+    }
+  }
+  return out;
+}
+
+export function isSpecificProductQuery(value: string) {
+  const tokens = titleTokens(value);
+  const modelish = tokens.some(token => /^(?=[a-z0-9.-]*[a-z])(?=[a-z0-9.-]*\d)[a-z0-9.-]{3,}$/i.test(token));
+  return brandTokens(value).size > 0 || familySignals(value).size > 0 || capacityTokens(value).size > 0 || skuTokens(value).size > 0 || modelish;
+}
+
+/**
+ * Search relevance is intentionally broader than product identity.
+ * Descriptive queries need semantic/stem matching, while known models keep the strict
+ * Variant Guard used by evaluateTitleMatch().
+ */
+export function evaluateSearchMatch(reference: string, candidate: string): TitleMatch {
+  if (isSpecificProductQuery(reference)) return evaluateTitleMatch(reference, candidate);
+
+  const left = searchTokenSet(reference);
+  const right = searchTokenSet(candidate);
+  if (!left.size || !right.size) return { score: 0, reliable: false, hardCoverage: 0, variantConflict: false, sharedTokens: 0, conflicts: ["empty"], reasons: [] };
+
+  const shared = intersectionCount(left, right);
+  const leftConcepts = searchConceptSet(reference);
+  const rightConcepts = searchConceptSet(candidate);
+  const conceptHits = intersectionCount(leftConcepts, rightConcepts);
+  const precision = shared / Math.max(1, Math.min(left.size, right.size));
+  const coverage = shared / Math.max(1, left.size);
+  const conceptCoverage = conceptHits / Math.max(1, leftConcepts.size || 1);
+
+  // Brand/model conflicts are still hard conflicts even for a natural-language query.
+  const strict = evaluateTitleMatch(reference, candidate);
+  const hardConflicts = strict.conflicts.filter(item => ["brand","model","storage","ram","variant","generation","sku","region","counterfeit"].includes(item));
+  const queryNumbers = new Set([...left].filter(token => /^\d+$/.test(token)));
+  const candidateNumbers = new Set([...right].filter(token => /^\d+$/.test(token)));
+  const numericHit = queryNumbers.size ? intersectionCount(queryNumbers, candidateNumbers) > 0 : false;
+
+  let score = precision * 0.40 + coverage * 0.32 + conceptCoverage * 0.24;
+  if (conceptHits >= 2) score += 0.16;
+  else if (conceptHits === 1) score += 0.08;
+  if (numericHit) score += 0.08;
+  if (hardConflicts.length) score -= Math.min(0.75, hardConflicts.length * 0.28);
+  score = Math.max(0, Math.min(1, score));
+
+  const enoughMeaning = conceptHits >= 2 || shared >= 2 || (conceptHits >= 1 && shared >= 1);
+  const reliable = hardConflicts.length === 0 && enoughMeaning && score >= 0.30;
+  const reasons = [conceptHits ? `concept:${conceptHits}` : "", shared ? `stem:${shared}` : "", numericHit ? "number" : ""].filter(Boolean);
+  return { score, reliable, hardCoverage: coverage, variantConflict: false, sharedTokens: shared, conflicts: hardConflicts, reasons };
+}
+
 export function bestProductMatch(reference: Product, candidates: Product[]) {
   let best: Product | null = null;
   let bestMatch: TitleMatch = { score: 0, reliable: false, hardCoverage: 0, variantConflict: false, sharedTokens: 0, conflicts: [], reasons: [] };

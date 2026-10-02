@@ -5,7 +5,7 @@ import { enrichProductReviews } from "./review-intelligence";
 import { identifySourceUrl } from "./source-registry";
 import { productVariantSignals } from "./matching";
 
-const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 SmartBuyAI/5.0";
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 SmartBuyAI/6.0";
 const SUPPORTED_FX = new Set(["USD", "EUR", "PLN", "GBP"]);
 
 type ImportExtraction = "automatic" | "partial" | "manual";

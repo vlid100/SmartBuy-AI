@@ -6,7 +6,7 @@ import {
   ArrowLeftRight, Banknote, Globe2, Heart, Info, MapPin, MessageSquareText, Play, RefreshCw, Search, ShieldCheck, ShoppingBag, SlidersHorizontal,
   Server, Sparkles, Star, Store, Target, ThumbsUp, Trash2, TrendingDown, TriangleAlert, UserRound, Wifi, X, Zap, Link2
 } from "lucide-react";
-import type { DiagnosticsResponse, Offer, PricePoint, Product, ProductBatchImportResponse, ProductImportResponse, SavedSearch, SearchApiResponse, SmartNotification, SmartSearchMeta, SourceCapabilityKey, SourceCapabilityLevel, SourceLink, SourceSearchStatus } from "@/lib/types";
+import type { DiagnosticsResponse, DiscoveryHit, Offer, PricePoint, Product, ProductBatchImportResponse, ProductImportResponse, SavedSearch, SearchApiResponse, SmartNotification, SmartSearchMeta, SourceCapabilityKey, SourceCapabilityLevel, SourceLink, SourceSearchStatus } from "@/lib/types";
 import { bestProductMatch } from "@/lib/matching";
 import { analyzeImportedProducts, mergeImportedProductGroup } from "@/lib/import-intelligence";
 import { comparisonSpecKeys, specValue } from "@/lib/specs";
@@ -654,6 +654,7 @@ export default function SmartBuyApp() {
   const [warning, setWarning] = useState<string | undefined>();
   const [sourceLinks, setSourceLinks] = useState<SourceLink[]>([]);
   const [sourceStatuses, setSourceStatuses] = useState<SourceSearchStatus[]>([]);
+  const [discoveryHits, setDiscoveryHits] = useState<DiscoveryHit[]>([]);
   const [coverage, setCoverage] = useState<SearchApiResponse["coverage"]>({ totalOffers: 0, storeOffers: 0, privateOffers: 0, newOffers: 0, usedOffers: 0, sourceCount: 0 });
   const [searchQuality, setSearchQuality] = useState<SearchApiResponse["quality"]>();
   const [selected, setSelected] = useState<Product | null>(null);
@@ -1038,6 +1039,7 @@ export default function SmartBuyApp() {
       setSmartMeta(data.smart || null);
       setSourceLinks(data.sourceLinks || []);
       setSourceStatuses(data.sourceStatuses || []);
+      setDiscoveryHits(data.discoveryHits || []);
       setCoverage(data.coverage || { totalOffers: 0, storeOffers: 0, privateOffers: 0, newOffers: 0, usedOffers: 0, sourceCount: 0 });
       setSearchQuality(data.quality);
       if (smart && data.smart) {
@@ -1052,13 +1054,14 @@ export default function SmartBuyApp() {
       setProducts([]);
       setSourceLinks([]);
       setSourceStatuses([]);
+      setDiscoveryHits([]);
       setSmartMeta(null);
       setSearchQuality(undefined);
       setCoverage({ totalOffers: 0, storeOffers: 0, privateOffers: 0, newOffers: 0, usedOffers: 0, sourceCount: 0 });
       const aborted = error instanceof DOMException && error.name === "AbortError";
       recordClientIssue(aborted ? "search_timeout" : "search_error", error);
       setClientIssues(readClientDiagnosticLog());
-      setWarning(aborted ? "Сервер не відповів у резервні 50 секунд. У v5.0.2 основний пошук має завершуватись значно раніше й повертати часткові результати без очікування повільних джерел. Спробуй повторити запит." : "Не вдалося виконати пошук. Перевір підключення й спробуй ще раз.");
+      setWarning(aborted ? "Сервер не відповів у резервні 50 секунд. Discovery Search v6.0 повертає часткові результати й окремі знайдені сторінки товарів, тому повтори запит — повільне джерело не повинно обнулювати весь ринок." : "Не вдалося виконати пошук. Перевір підключення й спробуй ще раз.");
     } finally {
       window.clearTimeout(timeout);
       if (sequence === searchSequenceRef.current) {
@@ -2063,7 +2066,7 @@ export default function SmartBuyApp() {
       </header>
 
       {tab !== "diagnostics" && <section className="hero" id="search">
-        <div className="eyebrow"><Sparkles size={15}/> SmartBuy AI v5.0.2 · Partial Results & Timeout Fix</div>
+        <div className="eyebrow"><Sparkles size={15}/> SmartBuy AI v6.0 · Partial Results & Timeout Fix</div>
         <h1>Знайди потрібну річ.<br/><span>Порівняй увесь ринок.</span></h1>
         <p>Українські магазини, приватні оголошення та закордонні майданчики в одному місці. SmartBuy показує автоматично підтверджені ціни окремо від прямих пошуків, щоб не вигадувати дані.</p>
 
@@ -2149,7 +2152,7 @@ export default function SmartBuyApp() {
         {tab === "search" && (
           <>
             <div className="sourceStatus marketStatus">
-              <div><BadgeCheck size={18}/><b>SmartBuy AI v5.0.2</b><span>{provider}</span></div>
+              <div><BadgeCheck size={18}/><b>SmartBuy AI v6.0</b><span>{provider}</span></div>
               <p><Info size={15}/> Зелені ціни — автоматично підтверджені. Adaptive Router ставить на перше місце джерела, які реально відповідають, розширює пошук лише коли потрібно й не обходить захист сайтів.</p>
             </div>
 
@@ -2208,7 +2211,7 @@ export default function SmartBuyApp() {
 
             {searched && searchQuality && (
               <section className="searchQualityCard">
-                <div className="searchQualityHead"><div><BadgeCheck size={17}/><span>Якість групування</span><b>{searchQuality.averageGroupingConfidence || 0}%</b></div><small>v5.0.2 Variant + Timeout Guard</small></div>
+                <div className="searchQualityHead"><div><BadgeCheck size={17}/><span>Якість групування</span><b>{searchQuality.averageGroupingConfidence || 0}%</b></div><small>v6.0 Discovery + Variant Guard</small></div>
                 <div className="searchQualityGrid">
                   <div><span>Сирих пропозицій</span><b>{searchQuality.rawOfferCount}</b></div>
                   <div><span>Унікальних</span><b>{searchQuality.uniqueOfferCount}</b><small>{searchQuality.duplicateOffersRemoved ? `-${searchQuality.duplicateOffersRemoved} дублів` : "без дублів"}</small></div>
@@ -2238,7 +2241,7 @@ export default function SmartBuyApp() {
             {sourceLinks.length > 0 && (
               <section className="sourceLauncher">
                 <div className="sourceLauncherHead">
-                  <div><h3>Де SmartBuy шукає цей товар</h3><p>v5.0.2 повертає часткові результати без очікування повільних джерел; v5.0 додає International Live, посилені OLX/Rozetka конектори, seller data, точніший Variant Guard за кольором/SKU/регіоном і production-захист. Fair Price, Adaptive Router, Query Expansion та Seller Decision Engine залишаються.</p></div>
+                  <div><h3>Де SmartBuy шукає цей товар</h3><p>v6.0 додає Discovery Search: описові запити розкладаються на короткі синонімічні форми українською/російською/англійською, а блокування магазину більше не означає «товару немає». Variant Guard для конкретних моделей, Fair Price, Seller Decision і часткові результати залишаються.</p></div>
                   <span>{sourceLinks.filter(s => s.access === "live").length} стабільні · {sourceLinks.filter(s => s.access === "probe").length} пробні · {sourceLinks.filter(s => s.access === "direct").length} прямі</span>
                 </div>
 
@@ -2397,7 +2400,7 @@ export default function SmartBuyApp() {
             </div>
 
             <div className="diagnosticSummaryGrid">
-              <div><Server size={17}/><span>Версія</span><b>{diagnostics?.version || "5.0.2"}</b><small>{diagnostics?.environment || "—"}</small></div>
+              <div><Server size={17}/><span>Версія</span><b>{diagnostics?.version || "6.0.0"}</b><small>{diagnostics?.environment || "—"}</small></div>
               <div><Database size={17}/><span>Supabase</span><b>{diagnostics?.cloudConfigured ? "Підключено" : diagnostics ? "Не налаштовано" : "—"}</b><small>ключі не показуються</small></div>
               <div><Wifi size={17}/><span>Інтернет</span><b>{clientRuntime ? (clientRuntime.online ? "Online" : "Offline") : "—"}</b><small>{clientRuntime?.serviceWorker === "active" ? "Service Worker активний" : clientRuntime?.serviceWorker === "supported" ? "Service Worker підтримується" : "Service Worker недоступний"}</small></div>
               <div><Bell size={17}/><span>Браузерні сповіщення</span><b>{clientRuntime?.notification === "granted" ? "Дозволені" : clientRuntime?.notification === "denied" ? "Заблоковані" : clientRuntime?.notification === "default" ? "Не запитані" : "Недоступні"}</b><small>{clientRuntime?.installed ? "PWA встановлена" : "веб-режим"}</small></div>
@@ -2472,17 +2475,23 @@ export default function SmartBuyApp() {
         )}
 
         {tab !== "saved" && tab !== "notifications" && tab !== "diagnostics" && <>
+        {tab === "search" && !loading && discoveryHits.length > 0 && (
+          <section className="discoveryResults">
+            <div className="discoveryResultsHead"><div><Sparkles size={17}/><span><b>Discovery Search</b><small>Знайдені реальні сторінки товарів, навіть якщо магазин не дав SmartBuy прочитати ціну автоматично</small></span></div><strong>{discoveryHits.length}</strong></div>
+            <div className="discoveryGrid">{discoveryHits.map(hit => <a key={hit.id} href={hit.url} target="_blank" rel="noreferrer" className="discoveryCard"><div><span>{hit.region === "international" ? <Globe2 size={15}/> : <Store size={15}/>} {hit.sourceName}</span><em>{hit.matchConfidence ? `збіг ${hit.matchConfidence}%` : "знайдено у вебі"}</em></div><b>{hit.title}</b>{hit.snippet && <p>{hit.snippet}</p>}<small>{hit.queryUsed ? `запит: ${hit.queryUsed}` : hit.provider || "Discovery"}<ExternalLink size={12}/></small></a>)}</div>
+          </section>
+        )}
         <div className="resultsHeader">
           <div>
             <h2>{tab === "watch" ? "Відстеження" : tab === "shortlist" ? "До покупки" : searched ? "Знайдені варіанти" : "Приклад об'єднаного ринку"}</h2>
-            <p>{loading ? "Шукаю…" : tab === "watch" ? `${watchProducts.length} відстежується` : tab === "shortlist" ? `${shortlistProducts.length} кандидатів` : `${products.length} моделей · ${coverage.totalOffers} пропозицій`}</p>
+            <p>{loading ? "Шукаю…" : tab === "watch" ? `${watchProducts.length} відстежується` : tab === "shortlist" ? `${shortlistProducts.length} кандидатів` : `${products.length} моделей · ${coverage.totalOffers} пропозицій${discoveryHits.length ? ` · ${discoveryHits.length} discovery` : ""}`}</p>
           </div>
           {tab === "search" && <div className="resultsTools"><button className="saveSearchButton" onClick={saveCurrentSearch}><Bookmark size={15}/> Зберегти пошук</button><div className="filter"><SlidersHorizontal size={17}/><span>До</span><input inputMode="numeric" value={maxPrice} onChange={e => setMaxPrice(e.target.value.replace(/\D/g, ""))} placeholder="ціна, ₴"/><button onClick={() => void runSearch(query, category, marketScope, conditionFilter, maxPrice, smartSearchActive)}>OK</button></div></div>}
         </div>
         {tab === "search" && savedMessage && <div className="searchSaveNotice"><Bookmark size={13}/>{savedMessage}</div>}
 
         {loading && tab === "search" ? <div className="loadingGrid">{[1,2,3].map(x => <div className="skeleton" key={x}/>)}</div> : visibleProducts.length === 0 ? (
-          <div className="empty"><ShoppingBag size={32}/><h3>{tab === "watch" || tab === "shortlist" ? "Тут поки порожньо" : "Нічого не знайшов"}</h3><p>{tab === "watch" ? "Натисни сердечко на товарі — він зʼявиться тут." : tab === "shortlist" ? "Натисни «До покупки» на товарі, який реально розглядаєш." : "Спробуй коротший запит або вибери «Весь ринок»."}</p></div>
+          <div className="empty"><ShoppingBag size={32}/><h3>{tab === "watch" || tab === "shortlist" ? "Тут поки порожньо" : discoveryHits.length ? "Ціну ще не підтверджено" : "Нічого не знайдено автоматично"}</h3><p>{tab === "watch" ? "Натисни сердечко на товарі — він зʼявиться тут." : tab === "shortlist" ? "Натисни «До покупки» на товарі, який реально розглядаєш." : discoveryHits.length ? "Вище вже є знайдені сторінки товарів. Відкрий потрібну — SmartBuy не приховує результат лише через те, що магазин заблокував автоматичне читання ціни." : "Discovery Search уже спробував коротші та синонімічні запити. Нижче можна відкрити прямий пошук у конкретних магазинах."}</p></div>
         ) : (
           <div className="grid">
             {visibleProducts.map((product, index) => {
@@ -3020,7 +3029,7 @@ export default function SmartBuyApp() {
       </div>}
 
 
-      <footer><div className="brand"><div className="logo">S</div><span>SmartBuy AI</span></div><p>v5.0.2 · Partial Results · Fast Search · International Live · Web Push · Seller Signals · Variant Guard · Production Hardening. · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></p></footer>
+      <footer><div className="brand"><div className="logo">S</div><span>SmartBuy AI</span></div><p>v6.0 · Discovery Search · Natural-language Queries · Ukraine + International · Partial Results · Web Push · Variant Guard. · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></p></footer>
     </main>
   );
 }

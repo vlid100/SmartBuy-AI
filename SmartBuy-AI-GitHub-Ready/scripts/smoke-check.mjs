@@ -15,6 +15,8 @@ const required = [
   'lib/matching.ts',
   'lib/source-router.ts',
   'lib/query-expansion.ts',
+  'lib/discovery-query.ts',
+  'lib/web-discovery.ts',
   'lib/source-capabilities.ts',
   'app/api/source-capabilities/route.ts',
   'app/api/import-product/route.ts',
@@ -46,8 +48,8 @@ if (missing.length) {
 }
 
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-if (pkg.version !== '5.0.2') {
-  console.error(`SmartBuy smoke-check: package version must be 5.0.2, got ${pkg.version}`);
+if (pkg.version !== '6.0.0') {
+  console.error(`SmartBuy smoke-check: package version must be 6.0.0, got ${pkg.version}`);
   process.exit(1);
 }
 
@@ -82,7 +84,7 @@ const persistenceSource = fs.readFileSync(path.join(root, 'lib/persistence.ts'),
 const matchingSource = fs.readFileSync(path.join(root, 'lib/matching.ts'), 'utf8');
 const searchRouteSource = fs.readFileSync(path.join(root, 'app/api/search/route.ts'), 'utf8');
 if (!appSource.includes('const searchTimeoutMs = 50000') || !appSource.includes('setCoverage({ totalOffers: 0') || !liveMarketSource.includes('fetchPageWithTimeout') || !liveMarketSource.includes('SMARTBUY_UKRAINE_TOTAL_TIMEOUT_MS') || !internationalSource.includes('SMARTBUY_INTERNATIONAL_WAVE_TIMEOUT_MS') || !searchSource.includes('Promise.allSettled') || searchSource.includes('await snapshotProducts') || !persistenceSource.includes('upsert(productRows') || !matchingSource.includes('макбук: "macbook"') || !searchRouteSource.includes('after(async ()') || !searchRouteSource.includes('SMARTBUY_SEARCH_ROUTE_TIMEOUT_MS') || !searchRouteSource.includes('export const maxDuration = 45')) {
-  console.error('SmartBuy smoke-check: v5.0.2 partial-results / timeout guards are incomplete.');
+  console.error('SmartBuy smoke-check: v6.0.0 partial-results / timeout guards are incomplete.');
   process.exit(1);
 }
 

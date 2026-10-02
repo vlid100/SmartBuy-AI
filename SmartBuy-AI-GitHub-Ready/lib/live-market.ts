@@ -2,7 +2,7 @@ import * as cheerio from "cheerio";
 import type { ListingCondition, Offer, Product, SourceCapabilities, SourceSearchStatus } from "@/lib/types";
 import { liveSourceIds, probeSourceIds } from "@/lib/source-registry";
 import { sourceConnectorProfile, type ConnectorAdapterKind } from "@/lib/source-capabilities";
-import { evaluateTitleMatch, productIdentityKey, productIdentityMeta, productVariantSignals } from "@/lib/matching";
+import { evaluateSearchMatch, evaluateTitleMatch, productIdentityKey, productIdentityMeta, productVariantSignals } from "@/lib/matching";
 import { expandSearchQuery } from "@/lib/query-expansion";
 import { decorateRouterStatus, isCoolingDown, rankSources, recordAndDecorateRouterStatus, routerCooldownMessage, type RouterPhase } from "@/lib/source-router";
 
@@ -139,7 +139,7 @@ export const stableLiveSources = liveSources.filter(source => liveSourceIds.has(
 export const probeLiveSources = liveSources.filter(source => probeSourceIds.has(source.id));
 export const automaticLiveSources = [...stableLiveSources, ...probeLiveSources];
 
-const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 SmartBuyAI/5.0";
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 SmartBuyAI/6.0";
 const PRICE_RE = /(?:₴|грн\.?|uah)?\s*([0-9][0-9\s\u00a0.,]{1,14})\s*(?:₴|грн\.?|uah)?/i;
 const BLOCK_PATTERNS = /captcha|cf-chl-|attention required[^<]{0,80}cloudflare|access denied|verify you are human|перевірте, що ви людина|доступ заборонено|unusual traffic|robot check/i;
 const STOP = new Set(["купити","ціна","ціни","новий","нова","нове","бв","б/в","бу","україна","україні","доставка","товар","смартфон","ноутбук","телефон","оригінал"]);
@@ -252,7 +252,7 @@ function usefulTitle(title: string, query: string) {
   if (t.length < 3 || t.length > 220) return false;
   const q = cleanText(query);
   if (q.length < 3) return true;
-  const match = evaluateTitleMatch(q, t);
+  const match = evaluateSearchMatch(q, t);
   const qTokens = titleTokens(q);
   if (qTokens.some(token => /\d/.test(token)) || /\b(pro|max|ultra|plus|mini|air|lite|fe|se)\b/i.test(q)) return match.reliable;
   return match.reliable || similarity(t, q) >= 0.36;
@@ -425,7 +425,7 @@ function dedupeOffers(offers: Offer[], query: string, max = 10) {
   const out: Offer[] = []; const keys = new Set<string>();
   for (const offer of offers) {
     if (!offer.title || !usefulTitle(offer.title, query)) continue;
-    const match = evaluateTitleMatch(query, offer.title);
+    const match = evaluateSearchMatch(query, offer.title);
     if (!match.reliable) continue;
     const normalizedUrl = (offer.url || "").replace(/[?#].*$/, "");
     const normalizedTitle = titleTokens(offer.title).slice(0, 16).join(" ");
@@ -875,8 +875,8 @@ function canonicalTitle(offers: Offer[], query = "") {
   if (!titles.length) return "Товар";
   if (!query) return [...titles].sort((a,b)=>a.length-b.length)[0];
   return [...titles].sort((a, b) => {
-    const am = evaluateTitleMatch(query, a);
-    const bm = evaluateTitleMatch(query, b);
+    const am = evaluateSearchMatch(query, a);
+    const bm = evaluateSearchMatch(query, b);
     return bm.score - am.score || a.length - b.length;
   })[0];
 }
@@ -954,7 +954,7 @@ export function groupLiveOffers(offers: Offer[], query: string, alreadyDeduped =
     const med = median(prices);
     const category = guessCategory(`${query} ${title}`);
     const saving = bestNew && bestUsed && bestUsed < bestNew ? Math.round((1 - bestUsed / bestNew) * 100) : 0;
-    const match = evaluateTitleMatch(query, title);
+    const match = evaluateSearchMatch(query, title);
     const anomalyCount = anomalies.length;
     const minPrice = Math.min(...prices);
     const maxPrice = Math.max(...prices);

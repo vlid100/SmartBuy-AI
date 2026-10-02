@@ -6,7 +6,7 @@ import { sourceRouterSummary } from "@/lib/source-router";
 export const dynamic = "force-dynamic";
 export async function GET() {
   return NextResponse.json({
-    version: "5.0.2",
+    version: "6.0.0",
     market: "Ukraine adaptive live routing + private probes + international direct search",
     architecture: "source-connectors+capability-matrix+assisted-product-import+adaptive-source-router+query-expansion+search-quality+fair-price-intelligence",
     automaticAggregation: "public-pages-best-effort-no-bypass",

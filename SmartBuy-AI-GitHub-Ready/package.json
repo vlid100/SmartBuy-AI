@@ -1,6 +1,6 @@
 {
   "name": "smartbuy-ai",
-  "version": "5.0.2",
+  "version": "6.0.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -11,7 +11,8 @@
     "smoke": "node scripts/smoke-check.mjs",
     "vapid": "node scripts/generate-vapid.mjs",
     "audit": "node scripts/feature-audit.mjs",
-    "stability": "node scripts/search-stability-audit.mjs"
+    "stability": "node scripts/search-stability-audit.mjs",
+    "discovery": "node scripts/discovery-search-audit.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",

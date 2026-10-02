@@ -1,8 +1,9 @@
 import * as cheerio from "cheerio";
 import type { Offer, SourceSearchStatus } from "@/lib/types";
-import { evaluateTitleMatch, productVariantSignals } from "@/lib/matching";
+import { evaluateSearchMatch, evaluateTitleMatch, productVariantSignals } from "@/lib/matching";
+import { buildDiscoveryQueries, translateDiscoveryQuery } from "@/lib/discovery-query";
 
-const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 SmartBuyAI/5.0";
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 SmartBuyAI/6.0";
 const BLOCK_PATTERNS = /captcha|cf-chl-|verify you are human|robot check|unusual traffic|access denied|automated access|sorry, we just need to make sure/i;
 
 type IntlSource = {
@@ -306,7 +307,7 @@ async function enrichInternationalOffers(source: IntlSource, offers: Offer[], bu
 function dedupe(items: Offer[], query: string) {
   const map = new Map<string, Offer>();
   for (const offer of items) {
-    if (!offer.title) continue; const match = evaluateTitleMatch(query, offer.title); if (!match.reliable) continue;
+    if (!offer.title) continue; const match = evaluateSearchMatch(query, offer.title); if (!match.reliable) continue;
     const key = `${offer.source}|${(offer.externalId || offer.url || offer.title).toLowerCase().replace(/[?#].*$/, "")}`;
     const current = map.get(key); const enriched = { ...offer, matchConfidence: Math.round(match.score * 100), matchConflicts: match.conflicts };
     if (!current || (enriched.sellerReviewCount || 0) + (enriched.productReviewCount || 0) > (current.sellerReviewCount || 0) + (current.productReviewCount || 0)) map.set(key, enriched);
@@ -314,37 +315,67 @@ function dedupe(items: Offer[], query: string) {
   return [...map.values()].sort((a, b) => (b.matchConfidence || 0) - (a.matchConfidence || 0) || a.price - b.price).slice(0, 12);
 }
 
+async function fetchIntlPage(url: string, timeoutMs: number) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(350, timeoutMs));
+  try {
+    const response = await fetch(url, { signal: controller.signal, redirect: "follow", cache: "no-store", headers: {
+      "user-agent": UA, "accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8", "accept-language": "en-US,en;q=0.9,uk;q=0.7", "cache-control": "no-cache",
+    }});
+    const html = response.ok ? await response.text() : "";
+    return { response, html };
+  } finally { clearTimeout(timer); }
+}
+
 async function searchSource(source: IntlSource, query: string, options: InternationalSearchOptions = {}): Promise<IntlSourceResult> {
   const started = Date.now();
-  const configuredTotal = Math.max(2200, Math.min(Number(process.env.SMARTBUY_INTERNATIONAL_TOTAL_TIMEOUT_MS || 6000), 8000));
+  const configuredTotal = Math.max(2200, Math.min(Number(process.env.SMARTBUY_INTERNATIONAL_TOTAL_TIMEOUT_MS || 6500), 9000));
   const outerRemaining = options.deadlineAt ? Math.max(0, options.deadlineAt - started) : Number.POSITIVE_INFINITY;
   if (outerRemaining <= 650) {
     return { offers: [], status: { id: source.id, name: source.name, state: "not-run", offerCount: 0, durationMs: 0, message: "загальний бюджет пошуку вичерпано; повернено вже знайдені результати", tier: "probe" } };
   }
   const totalBudgetMs = Math.max(650, Math.min(configuredTotal, Number.isFinite(outerRemaining) ? Math.max(650, outerRemaining - 120) : configuredTotal));
   const deadline = Math.min(started + totalBudgetMs, options.deadlineAt || Number.POSITIVE_INFINITY);
-  const controller = new AbortController();
-  const configuredFetch = Math.max(1200, Math.min(Number(process.env.SMARTBUY_INTERNATIONAL_TIMEOUT_MS || 4200), 6000));
-  const fetchBudget = Math.max(500, Math.min(configuredFetch, Math.max(500, totalBudgetMs - 500)));
-  const timeout = setTimeout(() => controller.abort(), fetchBudget);
-  try {
-    const url = source.buildUrl(query);
-    const response = await fetch(url, { signal: controller.signal, redirect: "follow", cache: "no-store", headers: {
-      "user-agent": UA, "accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8", "accept-language": "en-US,en;q=0.9,uk;q=0.7", "cache-control": "no-cache",
-    }});
-    if ([401, 403, 429].includes(response.status)) return { offers: [], status: { id: source.id, name: source.name, state: "blocked", offerCount: 0, durationMs: Date.now() - started, message: `HTTP ${response.status} · direct link remains available`, tier: "probe" } };
-    if (!response.ok) return { offers: [], status: { id: source.id, name: source.name, state: "error", offerCount: 0, durationMs: Date.now() - started, message: `HTTP ${response.status}`, tier: "probe" } };
-    const html = await response.text();
-    if (BLOCK_PATTERNS.test(html.slice(0, 220_000))) return { offers: [], status: { id: source.id, name: source.name, state: "blocked", offerCount: 0, durationMs: Date.now() - started, message: "anti-bot / captcha · direct link remains available", tier: "probe" } };
-    const raw = [...await parseCards(html, source, response.url || url), ...await parseStructured(html, source, response.url || url)];
-    const baseOffers = dedupe(raw, query);
-    const enrichBudget = Math.max(0, deadline - Date.now() - 150);
-    const offers = enrichBudget >= 600 ? await enrichInternationalOffers(source, baseOffers, enrichBudget) : baseOffers;
-    return { offers, status: { id: source.id, name: source.name, state: offers.length ? "ok" : "empty", offerCount: offers.length, durationMs: Date.now() - started, message: offers.length ? "live best-effort" : "page responded, no strict matching cards", tier: "probe", attempts: 1, queryUsed: query, queryVariantsTried: 1 } };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "network error"; const timed = /abort|timeout/i.test(message);
-    return { offers: [], status: { id: source.id, name: source.name, state: timed ? "timeout" : "error", offerCount: 0, durationMs: Date.now() - started, message, tier: "probe" } };
-  } finally { clearTimeout(timeout); }
+  const translated = await translateDiscoveryQuery(query, Math.min(1100, Math.max(350, deadline - Date.now() - 700)));
+  const baseVariants = buildDiscoveryQueries(query, "international", 4);
+  const variants = [{ query: translated, reason: "автоматичний англійський запит" }, ...baseVariants]
+    .filter((item, index, arr) => item.query && arr.findIndex(x => x.query.toLowerCase() === item.query.toLowerCase()) === index)
+    .slice(0, Math.max(1, Math.min(Number(process.env.SMARTBUY_INTERNATIONAL_QUERY_VARIANTS || 3), 4)));
+
+  let attempts = 0;
+  let lastState: SourceSearchStatus["state"] = "empty";
+  let lastMessage = "сторінка відповіла, релевантні картки не розпізнані";
+  for (let index = 0; index < variants.length; index++) {
+    const remaining = deadline - Date.now();
+    if (remaining < 650) { lastState = "timeout"; lastMessage = "вичерпано бюджет міжнародного джерела"; break; }
+    const variant = variants[index];
+    attempts += 1;
+    try {
+      const requestBudget = Math.max(500, Math.min(Number(process.env.SMARTBUY_INTERNATIONAL_TIMEOUT_MS || 2600), remaining - 250));
+      const url = source.buildUrl(variant.query);
+      const { response, html } = await fetchIntlPage(url, requestBudget);
+      if ([401, 403, 429].includes(response.status)) {
+        lastState = "blocked"; lastMessage = `HTTP ${response.status} · direct link remains available`; break;
+      }
+      if (!response.ok) { lastState = "error"; lastMessage = `HTTP ${response.status}`; continue; }
+      if (BLOCK_PATTERNS.test(html.slice(0, 220_000))) { lastState = "blocked"; lastMessage = "anti-bot / captcha · direct link remains available"; break; }
+      const raw = [...await parseCards(html, source, response.url || url), ...await parseStructured(html, source, response.url || url)];
+      const baseOffers = dedupe(raw, query);
+      if (!baseOffers.length) { lastState = "empty"; lastMessage = `варіант «${variant.query}» не дав підтверджених карток`; continue; }
+      const enrichBudget = Math.max(0, deadline - Date.now() - 150);
+      const offers = enrichBudget >= 600 ? await enrichInternationalOffers(source, baseOffers, enrichBudget) : baseOffers;
+      return { offers, status: {
+        id: source.id, name: source.name, state: "ok", offerCount: offers.length, durationMs: Date.now() - started,
+        message: index ? `знайдено через Discovery Query: ${variant.query}` : "live discovery",
+        tier: "probe", attempts, queryUsed: variant.query, queryVariantsTried: attempts, queryExpanded: index > 0 || variant.query.toLowerCase() !== query.toLowerCase(),
+      }};
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "network error";
+      lastState = /abort|timeout/i.test(message) ? "timeout" : "error";
+      lastMessage = message;
+    }
+  }
+  return { offers: [], status: { id: source.id, name: source.name, state: lastState, offerCount: 0, durationMs: Date.now() - started, message: lastMessage, tier: "probe", attempts, queryVariantsTried: attempts } };
 }
 
 export async function searchInternationalLive(query: string, options: InternationalSearchOptions = {}): Promise<{ offers: Offer[]; statuses: SourceSearchStatus[]; partial: boolean }> {

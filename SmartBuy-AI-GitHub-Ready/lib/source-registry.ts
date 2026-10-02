@@ -1,5 +1,6 @@
 import type { SourceLink, SourceCapabilities } from "./types";
 import { sourceCapabilityScore, sourceConnectorProfile } from "./source-capabilities";
+import { localEnglishQuery } from "./discovery-query";
 
 type SourceDef = Omit<SourceLink, "url"> & { buildUrl: (query: string) => string };
 
@@ -35,6 +36,8 @@ const internationalSources: SourceDef[] = [
   { id: "aliexpress", name: "AliExpress", kind: "international", label: "Закордон · live best-effort", access: "probe", buildUrl: q => `https://www.aliexpress.com/wholesale?SearchText=${enc(q)}` },
   { id: "temu", name: "Temu", kind: "international", label: "Закордон · live best-effort", access: "probe", buildUrl: q => `https://www.temu.com/search_result.html?search_key=${enc(q)}` },
   { id: "amazon", name: "Amazon", kind: "international", label: "Закордон · live best-effort", access: "probe", buildUrl: q => `https://www.amazon.com/s?k=${enc(q)}` },
+  { id: "1688", name: "1688", kind: "international", label: "Китай · прямий пошук", access: "direct", buildUrl: q => `https://s.1688.com/selloffer/offer_search.htm?keywords=${enc(q)}` },
+  { id: "taobao", name: "Taobao", kind: "international", label: "Китай · прямий пошук", access: "direct", buildUrl: q => `https://s.taobao.com/search?q=${enc(q)}` },
 ];
 
 
@@ -44,6 +47,7 @@ const sourceHosts: Record<string, string[]> = {
   allo: ["allo.ua"], epicentr: ["epicentrk.ua"], ktc: ["ktc.ua"], citrus: ["ctrs.com.ua", "citrus.ua"],
   stylus: ["stylus.ua"], mta: ["mta.ua"], telemart: ["telemart.ua"], brain: ["brain.com.ua"], shafa: ["shafa.ua"],
   aliexpress: ["aliexpress.com"], temu: ["temu.com"], amazon: ["amazon.com", "amazon.de", "amazon.co.uk", "amazon.pl", "amazon.it", "amazon.fr", "amazon.es"],
+  "1688": ["1688.com"], taobao: ["taobao.com", "tmall.com"],
 };
 
 export type IdentifiedSource = {
@@ -78,7 +82,7 @@ export function getSourceLinks(query: string, scope: "ukraine" | "international"
       return {
         ...source,
         region,
-        url: buildUrl(query),
+        url: buildUrl(region === "international" ? (localEnglishQuery(query) || query) : query),
         connectorAdapter: connector.adapter,
         capabilities: connector.capabilities,
         capabilityScore: sourceCapabilityScore(connector.capabilities),
