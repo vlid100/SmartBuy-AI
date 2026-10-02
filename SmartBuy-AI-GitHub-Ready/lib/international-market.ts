@@ -13,6 +13,7 @@ type IntlSource = {
 };
 
 type IntlSourceResult = { offers: Offer[]; status: SourceSearchStatus };
+export type InternationalSearchOptions = { deadlineAt?: number };
 type FxCache = { expiresAt: number; values: Record<string, number> };
 let fxCache: FxCache | null = null;
 
@@ -313,13 +314,18 @@ function dedupe(items: Offer[], query: string) {
   return [...map.values()].sort((a, b) => (b.matchConfidence || 0) - (a.matchConfidence || 0) || a.price - b.price).slice(0, 12);
 }
 
-async function searchSource(source: IntlSource, query: string): Promise<IntlSourceResult> {
+async function searchSource(source: IntlSource, query: string, options: InternationalSearchOptions = {}): Promise<IntlSourceResult> {
   const started = Date.now();
-  const totalBudgetMs = Math.max(2200, Math.min(Number(process.env.SMARTBUY_INTERNATIONAL_TOTAL_TIMEOUT_MS || 6000), 8000));
-  const deadline = started + totalBudgetMs;
+  const configuredTotal = Math.max(2200, Math.min(Number(process.env.SMARTBUY_INTERNATIONAL_TOTAL_TIMEOUT_MS || 6000), 8000));
+  const outerRemaining = options.deadlineAt ? Math.max(0, options.deadlineAt - started) : Number.POSITIVE_INFINITY;
+  if (outerRemaining <= 650) {
+    return { offers: [], status: { id: source.id, name: source.name, state: "not-run", offerCount: 0, durationMs: 0, message: "загальний бюджет пошуку вичерпано; повернено вже знайдені результати", tier: "probe" } };
+  }
+  const totalBudgetMs = Math.max(650, Math.min(configuredTotal, Number.isFinite(outerRemaining) ? Math.max(650, outerRemaining - 120) : configuredTotal));
+  const deadline = Math.min(started + totalBudgetMs, options.deadlineAt || Number.POSITIVE_INFINITY);
   const controller = new AbortController();
-  const configuredFetch = Math.max(1400, Math.min(Number(process.env.SMARTBUY_INTERNATIONAL_TIMEOUT_MS || 4200), 6000));
-  const fetchBudget = Math.max(1000, Math.min(configuredFetch, totalBudgetMs - 700));
+  const configuredFetch = Math.max(1200, Math.min(Number(process.env.SMARTBUY_INTERNATIONAL_TIMEOUT_MS || 4200), 6000));
+  const fetchBudget = Math.max(500, Math.min(configuredFetch, Math.max(500, totalBudgetMs - 500)));
   const timeout = setTimeout(() => controller.abort(), fetchBudget);
   try {
     const url = source.buildUrl(query);
@@ -341,16 +347,25 @@ async function searchSource(source: IntlSource, query: string): Promise<IntlSour
   } finally { clearTimeout(timeout); }
 }
 
-export async function searchInternationalLive(query: string): Promise<{ offers: Offer[]; statuses: SourceSearchStatus[] }> {
+export async function searchInternationalLive(query: string, options: InternationalSearchOptions = {}): Promise<{ offers: Offer[]; statuses: SourceSearchStatus[]; partial: boolean }> {
   const disabled = new Set(String(process.env.SMARTBUY_DISABLED_SOURCES || "").toLowerCase().split(",").map(value => value.trim()).filter(Boolean));
   const enabled = sources.filter(source => !disabled.has(source.id));
-  if (!query.trim() || process.env.SMARTBUY_INTERNATIONAL_FETCH_ENABLED === "false") return { offers: [] as Offer[], statuses: sources.map<SourceSearchStatus>(source => ({ id: source.id, name: source.name, state: "not-run", offerCount: 0, durationMs: 0, message: disabled.has(source.id) ? "disabled by source policy" : "international live fetch disabled", tier: "probe" })) };
-  const results = await Promise.all(enabled.map(source => searchSource(source, query)));
+  if (!query.trim() || process.env.SMARTBUY_INTERNATIONAL_FETCH_ENABLED === "false") return { offers: [] as Offer[], statuses: sources.map<SourceSearchStatus>(source => ({ id: source.id, name: source.name, state: "not-run", offerCount: 0, durationMs: 0, message: disabled.has(source.id) ? "disabled by source policy" : "international live fetch disabled", tier: "probe" })), partial: false };
+
+  const started = Date.now();
+  const overallBudget = Math.max(3_000, Math.min(Number(process.env.SMARTBUY_INTERNATIONAL_WAVE_TIMEOUT_MS || 8_000), 10_000));
+  const deadlineAt = Math.min(started + overallBudget, options.deadlineAt || Number.POSITIVE_INFINITY);
+  const settled = await Promise.allSettled(enabled.map(source => searchSource(source, query, { deadlineAt })));
+  const results: IntlSourceResult[] = settled.flatMap((item, index) => item.status === "fulfilled"
+    ? [item.value]
+    : [{ offers: [], status: { id: enabled[index].id, name: enabled[index].name, state: "error", offerCount: 0, durationMs: Date.now() - started, message: "connector runtime error", tier: "probe" } }]);
   const byId = new Map(results.map(item => [item.status.id, item]));
+  const partial = Date.now() >= deadlineAt - 250 || results.some(item => ["timeout", "error"].includes(item.status.state) || (item.status.state === "not-run" && /бюджет/i.test(item.status.message || "")));
   return {
     offers: results.flatMap(item => item.offers),
     statuses: sources.map<SourceSearchStatus>(source => disabled.has(source.id)
       ? { id: source.id, name: source.name, state: "not-run", offerCount: 0, durationMs: 0, message: "disabled by source policy", tier: "probe" }
-      : byId.get(source.id)?.status || { id: source.id, name: source.name, state: "not-run", offerCount: 0, durationMs: 0, message: "not run", tier: "probe" }),
+      : byId.get(source.id)?.status || { id: source.id, name: source.name, state: "not-run", offerCount: 0, durationMs: 0, message: partial ? "зупинено загальним бюджетом; часткові результати повернено" : "not run", tier: "probe" }),
+    partial,
   };
 }

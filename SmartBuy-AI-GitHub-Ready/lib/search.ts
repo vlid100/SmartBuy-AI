@@ -2,9 +2,8 @@ import { products as previewProducts } from "@/lib/mock-data";
 import { getSourceLinks, sourceCounts } from "@/lib/source-registry";
 import { dedupeLiveOffers, groupLiveOffers, searchUkraineLive } from "@/lib/live-market";
 import { searchInternationalLive } from "@/lib/international-market";
-import type { MarketCoverage, Offer, Product, SearchApiResponse } from "@/lib/types";
+import type { MarketCoverage, Offer, Product, SearchApiResponse, SourceSearchStatus } from "@/lib/types";
 import { parseSmartIntent, rankProductsForIntent } from "@/lib/smart-intent";
-import { snapshotProducts } from "@/lib/persistence";
 import { enrichProductSpecs, specsAsText } from "@/lib/specs";
 import { enrichProductReviews } from "@/lib/review-intelligence";
 import { normalizeSearchQuery } from "@/lib/matching";
@@ -74,7 +73,33 @@ function filterSourceLinks(query: string, scope: MarketScope) {
   return all;
 }
 
-export async function searchProducts(query: string, category = "", maxPrice?: number, scope: MarketScope = "all", condition: ConditionFilter = "all", smart = false): Promise<SearchApiResponse> {
+export type SearchExecutionOptions = { deadlineAt?: number };
+
+type SearchWave = { offers: Offer[]; statuses: SourceSearchStatus[]; partial: boolean };
+
+function failedWave(id: string, name: string, message: string): SearchWave {
+  return {
+    offers: [],
+    statuses: [{ id, name, state: "error", offerCount: 0, durationMs: 0, message, tier: "probe" }],
+    partial: true,
+  };
+}
+
+function appendPartialWarning(warning: string | undefined, hasResults: boolean) {
+  const note = hasResults
+    ? "Показано вже знайдені підтверджені пропозиції; повільні або заблоковані джерела не затримують результат."
+    : "Частина повільних або заблокованих джерел не встигла в безпечний бюджет пошуку. Прямі посилання на джерела залишаються доступними.";
+  return warning ? `${warning} ${note}` : note;
+}
+
+export async function searchProducts(query: string, category = "", maxPrice?: number, scope: MarketScope = "all", condition: ConditionFilter = "all", smart = false, options: SearchExecutionOptions = {}): Promise<SearchApiResponse> {
+  const started = Date.now();
+  // The route itself may live for longer, but the market core intentionally returns earlier.
+  // This leaves headroom for JSON serialization/cold starts and prevents a browser timeout.
+  const configuredBudget = Math.max(8_000, Math.min(Number(process.env.SMARTBUY_SEARCH_CORE_TIMEOUT_MS || 26_000), 32_000));
+  const overallDeadline = Math.min(started + configuredBudget, options.deadlineAt || Number.POSITIVE_INFINITY);
+  const waveDeadline = (budgetMs: number) => Math.min(overallDeadline, Date.now() + budgetMs);
+
   const intent = smart && query.trim() ? parseSmartIntent(query.trim()) : undefined;
   const rawEffectiveQuery = intent?.derivedQuery || query;
   const effectiveQuery = normalizeSearchQuery(rawEffectiveQuery);
@@ -86,7 +111,12 @@ export async function searchProducts(query: string, category = "", maxPrice?: nu
 
   if (query.trim()) {
     if (effectiveScope === "international") {
-      const international = await searchInternationalLive(effectiveQuery.trim());
+      let international: SearchWave;
+      try {
+        international = await searchInternationalLive(effectiveQuery.trim(), { deadlineAt: waveDeadline(9_500) });
+      } catch {
+        international = failedWave("international-wave", "International Live", "міжнародна хвиля завершилась помилкою; прямі посилання доступні");
+      }
       const deduped = dedupeLiveOffers(international.offers);
       const grouped = groupLiveOffers(deduped.offers, effectiveQuery.trim(), true);
       let results = filterProducts(grouped, effectiveQuery, effectiveCategory, effectiveMaxPrice, effectiveScope, effectiveCondition, false);
@@ -101,21 +131,32 @@ export async function searchProducts(query: string, category = "", maxPrice?: nu
         identityCoverage: grouped.length ? Math.round((grouped.filter(product => Boolean(product.grouping?.identityKey)).length / grouped.length) * 100) : 0,
         averageGroupingConfidence: grouped.length ? Math.round(grouped.reduce((sum, product) => sum + (product.grouping?.confidence || 0), 0) / grouped.length) : 0,
       };
-      if (results.length) await snapshotProducts(results);
+      let warning = results.length
+        ? `International Live: ${ok} з 3 джерел дали підтверджені картки. Оригінальна валюта збережена, ціна нормалізована в гривню; доставка й наявність підтягуються лише коли майданчик реально віддає ці поля.`
+        : `Міжнародні майданчики перевірені автоматично, але підтверджених карток не отримано${blocked ? ` · ${blocked} джерел заблокували серверний доступ` : ""}. Прямі посилання нижче залишаються доступними — SmartBuy не обходить CAPTCHA і не вигадує ціни.`;
+      if (international.partial) warning = appendPartialWarning(warning, results.length > 0);
       return {
         query, count: results.length, results, mode: "hybrid", provider: "International Live · AliExpress · Temu · Amazon",
-        warning: results.length
-          ? `International Live: ${ok} з 3 джерел дали підтверджені картки. Оригінальна валюта збережена, ціна нормалізована в гривню; доставка й наявність підтягуються лише коли майданчик реально віддає ці поля.`
-          : `Міжнародні майданчики перевірені автоматично, але підтверджених карток не отримано${blocked ? ` · ${blocked} джерел заблокували серверний доступ` : ""}. Прямі посилання нижче залишаються доступними — SmartBuy не обходить CAPTCHA і не вигадує ціни.`,
-        coverage: makeCoverage(results), sourceLinks, sourceStatuses: international.statuses, smart: intent, quality,
+        warning, coverage: makeCoverage(results), sourceLinks, sourceStatuses: international.statuses, smart: intent, quality,
+        partial: international.partial, durationMs: Date.now() - started,
       };
     }
 
     const liveMode = effectiveScope === "private" ? "private" : effectiveScope === "all" ? "all" : "stores";
-    const [ukraine, international] = await Promise.all([
-      searchUkraineLive(effectiveQuery.trim(), liveMode),
-      effectiveScope === "all" ? searchInternationalLive(effectiveQuery.trim()) : Promise.resolve({ offers: [] as Offer[], statuses: [] }),
-    ]);
+    const ukrainePromise = searchUkraineLive(effectiveQuery.trim(), liveMode, { deadlineAt: waveDeadline(effectiveScope === "private" ? 10_000 : 20_000) });
+    const internationalPromise = effectiveScope === "all"
+      ? searchInternationalLive(effectiveQuery.trim(), { deadlineAt: waveDeadline(9_000) })
+      : Promise.resolve({ offers: [] as Offer[], statuses: [] as SourceSearchStatus[], partial: false });
+
+    const [ukraineSettled, internationalSettled] = await Promise.allSettled([ukrainePromise, internationalPromise]);
+    const ukraine: SearchWave = ukraineSettled.status === "fulfilled"
+      ? ukraineSettled.value
+      : failedWave("ukraine-wave", "Український ринок", "одна з серверних хвиль завершилась помилкою; інші результати збережено");
+    const international: SearchWave = internationalSettled.status === "fulfilled"
+      ? internationalSettled.value
+      : failedWave("international-wave", "International Live", "міжнародна хвиля завершилась помилкою; українські результати збережено");
+
+    const partial = ukraine.partial || international.partial || ukraineSettled.status === "rejected" || internationalSettled.status === "rejected";
     const live = { offers: [...ukraine.offers, ...international.offers], statuses: [...ukraine.statuses, ...international.statuses] };
     const deduped = dedupeLiveOffers(live.offers);
     const grouped = groupLiveOffers(deduped.offers, effectiveQuery.trim(), true);
@@ -176,11 +217,12 @@ export async function searchProducts(query: string, category = "", maxPrice?: nu
       if (blocked) parts.push(`${blocked} заблокували серверний доступ`);
       warning = `Live Market + Adaptive Router + Query Expansion: ${parts.join(" · ")}${expansionHits.length ? ` · ${expansionHits.length} джерел знайшли товар через додатковий варіант запиту` : ""}. Прямі кнопки залишаються доступними для всього ринку.`;
     }
+    if (partial) warning = appendPartialWarning(warning, results.length > 0);
 
-    await snapshotProducts(results);
     return {
       query, count: results.length, results, mode: "hybrid",
       provider, warning, coverage: makeCoverage(results), sourceLinks, sourceStatuses: live.statuses, smart: intent, quality,
+      partial, durationMs: Date.now() - started,
     };
   }
 
@@ -190,6 +232,6 @@ export async function searchProducts(query: string, category = "", maxPrice?: nu
     query, count: preview.length, results: preview, mode: "market-preview",
     provider: effectiveScope === "ukraine" ? "Україна" : effectiveScope === "private" ? "Від людей" : "Весь ринок",
     warning: "Введи конкретний товар або скористайся «Розумним підбором». SmartBuy автоматично перевірить джерела, які стабільно доступні з Vercel, а для решти покаже прямі кнопки пошуку.",
-    coverage: makeCoverage(preview), sourceLinks, smart: intent,
+    coverage: makeCoverage(preview), sourceLinks, smart: intent, partial: false, durationMs: Date.now() - started,
   };
 }

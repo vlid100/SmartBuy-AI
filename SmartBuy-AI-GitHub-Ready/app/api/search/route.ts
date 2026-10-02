@@ -1,7 +1,8 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { searchProducts, type ConditionFilter, type MarketScope } from "@/lib/search";
 import { applyRateLimit } from "@/lib/rate-limit";
 import { serverLog } from "@/lib/server-log";
+import { snapshotProducts } from "@/lib/persistence";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 45;
@@ -26,9 +27,23 @@ export async function GET(request: NextRequest) {
 
   const smart = request.nextUrl.searchParams.get("smart") === "1";
   try {
-    const result = await searchProducts(q, category, maxPrice, scope, condition, smart);
-    if (Date.now() - started > 6000 || !result.results.length) void serverLog("search_complete", "info", { scope, durationMs: Date.now() - started, count: result.count, sourceCount: result.coverage.sourceCount });
-    return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
+    const routeBudgetMs = Math.max(12_000, Math.min(Number(process.env.SMARTBUY_SEARCH_ROUTE_TIMEOUT_MS || 30_000), 36_000));
+    const result = await searchProducts(q, category, maxPrice, scope, condition, smart, { deadlineAt: started + routeBudgetMs });
+
+    // Persist product snapshots after the response path is ready. Next.js `after()` lets
+    // Vercel do this work without making the user wait for Supabase history writes.
+    if (result.results.length) {
+      const snapshot = result.results;
+      after(async () => {
+        try { await snapshotProducts(snapshot); } catch {}
+      });
+    }
+    if (Date.now() - started > 6000 || !result.results.length || result.partial) void serverLog("search_complete", "info", { scope, durationMs: Date.now() - started, count: result.count, sourceCount: result.coverage.sourceCount, partial: Boolean(result.partial) });
+    return NextResponse.json(result, { headers: {
+      "Cache-Control": "no-store",
+      "X-SmartBuy-Search-Ms": String(Date.now() - started),
+      "X-SmartBuy-Partial": result.partial ? "1" : "0",
+    } });
   } catch (error) {
     void serverLog("search_error", "error", { scope, durationMs: Date.now() - started, message: error instanceof Error ? error.message : "unknown" });
     return NextResponse.json({ error: "search_failed", message: "Не вдалося завершити пошук." }, { status: 500 });

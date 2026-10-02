@@ -231,6 +231,10 @@ export type SearchApiResponse = {
   sourceStatuses?: SourceSearchStatus[];
   smart?: SmartSearchMeta;
   quality?: SearchQualityMeta;
+  // True when SmartBuy intentionally returned the offers already found instead of
+  // waiting for every slow/blocked connector. Partial results are still real results.
+  partial?: boolean;
+  durationMs?: number;
 };
 
 

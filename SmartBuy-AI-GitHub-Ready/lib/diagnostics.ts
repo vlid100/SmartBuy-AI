@@ -4,7 +4,7 @@ import { sourceCapabilitySummary, sourceCounts } from "@/lib/source-registry";
 import { searchSource, stableLiveSources } from "@/lib/live-market";
 import { pushConfigured } from "@/lib/push";
 
-const VERSION = "5.0.1";
+const VERSION = "5.0.2";
 
 const requiredTables = [
   ["smartbuy_products", "product_key"],

@@ -1,64 +1,51 @@
-# SmartBuy AI v5.0.1 — Search Stability Fix
+# SmartBuy AI v5.0.2 — Partial Results & Timeout Fix
 
-v5.0.1 keeps the v5.0 production feature set and fixes long-running market searches.
+v5.0.2 keeps the full v5.0 production feature set and rebuilds the search timing path so a slow marketplace can no longer wipe out results that SmartBuy has already found.
 
-Search stability changes:
-- client safety timeout increased while source-level budgets prevent one slow site from blocking the market;
-- OLX/Rozetka and probe sources have absolute per-source deadlines;
-- international fetch + enrichment share one total deadline;
-- timeout/error clears stale coverage counters, preventing `0 моделей · old пропозицій`.
+## Search fixes in v5.0.2
 
-v5.0 is a consolidation release: instead of adding another isolated card, it closes the remaining production gaps around live sources, seller data, variant dedupe, Web Push and deployment hardening.
+- **Partial results instead of all-or-nothing**: Ukraine and International Live waves are isolated with `Promise.allSettled`. If one wave fails, the other one still reaches the UI.
+- **Hard overall search budgets**: the market core finishes before the Vercel route limit; Ukraine and international waves also have their own global deadlines.
+- **Per-source deadlines include the response body**: the AbortController now remains active through `response.text()`. A site that sends headers and then stalls cannot hang the whole request.
+- **No slow Supabase write on the user path**: product/price-history snapshots run with Next.js `after()` after the response is ready.
+- **Batched history persistence**: SmartBuy now uses one batch product upsert and a bounded recent-history query instead of several sequential Supabase calls per product.
+- **Timeout/error cache is short-lived**: one temporary failure no longer poisons the same query for several minutes.
+- **MacBook Ukrainian query fix**: `макбук`, `мак бук`, `макбук ейр`, `макбук про` normalize to MacBook terms. `MacBook Air 15` also matches listings written as `15.3`, while M3/M4 generations remain separate product identities.
+- **Client/server timeout no longer race**: the browser has a 50-second emergency guard, while the server intentionally returns much earlier with whatever verified results are available.
+- **Accurate counters**: an unsuccessful request clears stale model/offer coverage; successful partial responses keep the real offers that were already found.
 
-## What is new
-
-- **True Web Push**: VAPID + PushManager + Supabase subscriptions + service-worker `push` / `notificationclick`. Notifications created by price tracking and Deal Alerts can be delivered when no SmartBuy tab is open.
-- **International Live** for Amazon, AliExpress and Temu: best-effort public-page search + limited detail-page enrichment, original currency, NBU conversion to UAH, image, seller, availability, shipping and returns when the source exposes them. Parsed shipping cost can prefill the Real Total Cost calculator. CAPTCHA/403 is reported honestly and direct search/import stays available.
-- **OLX / Rozetka hardening**: alternate public search URLs, retries, JSON/JSON-LD + selectors + generic fallback, strict original-query validation and limited product-page enrichment for seller/delivery/return signals.
-- **Seller intelligence v2**: seller rating, review count, account/store history and return policy now feed Seller Trust when these fields are available. Private-listing warnings stay neutral and never label a seller as a fraudster.
-- **Variant Guard v2**: color, SKU/model code and regional-version conflicts are checked before two offers can merge. Missing optional data does not automatically split an otherwise matching product.
-- **Production layer**: per-instance API burst rate limiting, optional Supabase server-event log, stronger security headers, Privacy/Terms pages, `robots.txt`, `sitemap.xml`, source-use guardrails and diagnostics for Web Push / new tables.
+v5.0 remains the production foundation: true Web Push, International Live (Amazon/AliExpress/Temu), OLX/Rozetka hardening, seller intelligence, Variant Guard v2, rate limiting, server logs, Privacy/Terms, robots/sitemap and source-policy controls.
 
 ## One-time setup after upload
 
-### 1. Supabase
-Run **`supabase/v5.0_production.sql`** once in Supabase → SQL Editor. It adds:
+### Supabase
+If you already ran **`supabase/v5.0_production.sql`**, do **not** run any new SQL for v5.0.2. This patch changes search/application code only.
 
-- `smartbuy_push_subscriptions`
-- `smartbuy_server_events`
-
-`supabase/update_to_latest.sql` and `schema.sql` also contain the same v5.0 migration for a fresh project.
-
-### 2. VAPID keys for Web Push
-After `npm install`, run:
-
-```bash
-npm run vapid
-```
-
-Add the printed values to Vercel → Project → Settings → Environment Variables:
+### Web Push
+Keep the existing Vercel variables:
 
 - `WEB_PUSH_PUBLIC_KEY`
 - `WEB_PUSH_PRIVATE_KEY`
-- `WEB_PUSH_SUBJECT` (for example `mailto:you@example.com`)
+- `WEB_PUSH_SUBJECT`
 
-Redeploy. In SmartBuy → Notifications press **Увімкнути Web Push**, then **Тест push**.
+No new secret is required for v5.0.2.
 
-### 3. Recommended environment variable
+## Optional timing controls
 
-Set `NEXT_PUBLIC_SITE_URL` to your production URL so sitemap/canonical metadata use the correct host.
-
-If a marketplace policy changes, you can stop its automatic connector without a code change:
+The built-in defaults are intended for Vercel and normally should be left unchanged:
 
 ```env
-SMARTBUY_DISABLED_SOURCES=olx,amazon
+SMARTBUY_SEARCH_ROUTE_TIMEOUT_MS=30000
+SMARTBUY_SEARCH_CORE_TIMEOUT_MS=26000
+SMARTBUY_UKRAINE_TOTAL_TIMEOUT_MS=18000
+SMARTBUY_INTERNATIONAL_WAVE_TIMEOUT_MS=8000
 ```
 
-Leave the variable empty normally. Direct links remain available.
+Per-source controls from v5.0.1 still work (`SMARTBUY_SOURCE_TOTAL_TIMEOUT_MS`, `SMARTBUY_PROBE_TOTAL_TIMEOUT_MS`, `SMARTBUY_PRIORITY_SOURCE_TOTAL_TIMEOUT_MS`, etc.).
 
-## Important limitation of external sources
+## External-source limitation
 
-SmartBuy does not bypass CAPTCHA, authentication, access controls or source rate limits. Amazon/AliExpress/Temu/OLX/Rozetka and other sites may independently change markup or block Vercel server requests. In that case SmartBuy marks the source as blocked/empty and keeps a direct source link instead of inventing data. See `SOURCE_USE.md`.
+SmartBuy does not bypass CAPTCHA, authentication, access controls or marketplace rate limits. If a source blocks Vercel, SmartBuy marks that source accordingly and returns results from the other sources instead of inventing data. Direct search/import links remain available. See `SOURCE_USE.md`.
 
 ## Checks
 
@@ -66,6 +53,7 @@ SmartBuy does not bypass CAPTCHA, authentication, access controls or source rate
 npm install
 npm run smoke
 npm run audit
+npm run stability
 npm run check
 npm run build
 ```

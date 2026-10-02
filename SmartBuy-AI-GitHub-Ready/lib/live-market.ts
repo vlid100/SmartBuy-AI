@@ -28,6 +28,7 @@ export type LiveSource = {
 
 type SourceResult = { offers: Offer[]; status: SourceSearchStatus };
 type LiveMode = "stores" | "private" | "all";
+export type LiveSearchOptions = { deadlineAt?: number };
 type CacheEntry = { expiresAt: number; value: SourceResult };
 
 const enc = (value: string) => encodeURIComponent(value.trim());
@@ -438,11 +439,16 @@ function dedupeOffers(offers: Offer[], query: string, max = 10) {
     .slice(0, max);
 }
 
-async function fetchWithTimeout(url: string, timeoutMs: number) {
+type TimedPage = { response: Response; body: string };
+
+// Keep the AbortController alive until the response body is consumed.
+// In v5.0.1 the timer was cleared as soon as headers arrived, so response.text()
+// could still hang long enough to exhaust the whole /api/search request.
+async function fetchPageWithTimeout(url: string, timeoutMs: number): Promise<TimedPage> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const timeout = setTimeout(() => controller.abort(), Math.max(300, timeoutMs));
   try {
-    return await fetch(url, {
+    const response = await fetch(url, {
       signal: controller.signal,
       redirect: "follow",
       cache: "no-store",
@@ -454,7 +460,11 @@ async function fetchWithTimeout(url: string, timeoutMs: number) {
         "cache-control": "no-cache",
       },
     });
-  } finally { clearTimeout(timeout); }
+    const body = response.ok ? await response.text() : "";
+    return { response, body };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function cacheKey(source: LiveSource, query: string) { return `${source.id}::${query.trim().toLowerCase()}`; }
@@ -474,7 +484,18 @@ function readCache(source: LiveSource, query: string, phase: RouterPhase): Sourc
 }
 function writeCache(source: LiveSource, query: string, value: SourceResult, phase: RouterPhase) {
   value.status = recordAndDecorateRouterStatus(source, value.status, phase);
-  const ttlMs = Math.max(30_000, Math.min(Number(process.env.SMARTBUY_SOURCE_CACHE_MS || 240_000), 900_000));
+  // Successful cards can be reused for a few minutes, but a transient timeout must
+  // never poison the next user search for the same product.
+  const configuredOkTtl = Math.max(30_000, Math.min(Number(process.env.SMARTBUY_SOURCE_CACHE_MS || 240_000), 900_000));
+  const ttlMs = value.status.state === "ok"
+    ? configuredOkTtl
+    : value.status.state === "empty"
+      ? Math.min(configuredOkTtl, 75_000)
+      : value.status.state === "blocked"
+        ? 45_000
+        : value.status.state === "timeout" || value.status.state === "error"
+          ? 12_000
+          : 5_000;
   sourceCache.set(cacheKey(source, query), { expiresAt: Date.now() + ttlMs, value });
   if (sourceCache.size > 160) {
     const first = sourceCache.keys().next().value as string | undefined;
@@ -487,9 +508,8 @@ async function enrichPriorityOffer(source: LiveSource, offer: Offer, timeoutOver
   try {
     const configured = Math.max(700, Math.min(Number(process.env.SMARTBUY_SELLER_ENRICH_TIMEOUT_MS || 1800), 3500));
     const effectiveTimeout = Math.max(500, Math.min(timeoutOverrideMs ?? configured, configured));
-    const response = await fetchWithTimeout(offer.url, effectiveTimeout);
+    const { response, body: html } = await fetchPageWithTimeout(offer.url, effectiveTimeout);
     if (!response.ok) return offer;
-    const html = await response.text();
     if (BLOCK_PATTERNS.test(html.slice(0, 160_000))) return offer;
     const structured = parseJsonCandidates(html, source, response.url || offer.url)
       .filter(item => item.title && evaluateTitleMatch(offer.title || "", item.title).score >= 0.72)
@@ -523,7 +543,7 @@ async function enrichPriorityOffers(source: LiveSource, offers: Offer[], budgetM
   return [...head, ...offers.slice(limit)];
 }
 
-export async function searchSource(source: LiveSource, query: string, phase: RouterPhase = "primary"): Promise<SourceResult> {
+export async function searchSource(source: LiveSource, query: string, phase: RouterPhase = "primary", options: LiveSearchOptions = {}): Promise<SourceResult> {
   const cached = readCache(source, query, phase);
   if (cached) return cached;
 
@@ -538,8 +558,15 @@ export async function searchSource(source: LiveSource, query: string, phase: Rou
       ? Number(process.env.SMARTBUY_SOURCE_TOTAL_TIMEOUT_MS || 5600)
       : Number(process.env.SMARTBUY_PROBE_TOTAL_TIMEOUT_MS || 3600);
   const phaseFactor = phase === "expanded" ? 0.82 : 1;
-  const sourceBudgetMs = Math.max(1400, Math.min(Math.round(configuredBudget * phaseFactor), 8000));
-  const deadline = started + sourceBudgetMs;
+  const outerRemaining = options.deadlineAt ? Math.max(0, options.deadlineAt - started) : Number.POSITIVE_INFINITY;
+  if (outerRemaining <= 450) {
+    return { offers: [], status: decorateRouterStatus(source, {
+      id: source.id, name: source.name, state: "not-run", offerCount: 0, durationMs: 0,
+      message: "загальний бюджет пошуку вичерпано; повернено вже знайдені результати", tier: source.tier,
+    }, phase) };
+  }
+  const sourceBudgetMs = Math.max(450, Math.min(Math.round(configuredBudget * phaseFactor), 8000, Number.isFinite(outerRemaining) ? Math.max(450, outerRemaining - 120) : 8000));
+  const deadline = Math.min(started + sourceBudgetMs, options.deadlineAt || Number.POSITIVE_INFINITY);
   const remainingBudget = () => Math.max(0, deadline - Date.now());
   const maxAttempts = source.tier === "stable" || prioritySource ? 2 : 1;
   const variants = expandSearchQuery(query, source.id);
@@ -563,8 +590,8 @@ export async function searchSource(source: LiveSource, query: string, phase: Rou
         if (remainingBudget() < 500) { lastState = "timeout"; lastMessage = `ліміт джерела ${sourceBudgetMs} мс`; break variantLoop; }
         networkAttempts += 1;
         try {
-          const requestTimeout = Math.max(450, Math.min(timeoutMs, remainingBudget()));
-          const response = await fetchWithTimeout(url, requestTimeout);
+          const requestTimeout = Math.max(350, Math.min(timeoutMs, remainingBudget()));
+          const { response, body: html } = await fetchPageWithTimeout(url, requestTimeout);
           const durationMs = Date.now() - started;
           if (response.status === 403 || response.status === 401 || response.status === 429) {
             lastState = "blocked"; lastMessage = `HTTP ${response.status}`;
@@ -580,7 +607,6 @@ export async function searchSource(source: LiveSource, query: string, phase: Rou
           if (!contentType.includes("text/html") && !contentType.includes("application/xhtml") && !contentType.includes("json")) {
             lastState = "empty"; lastMessage = "не HTML/JSON"; break;
           }
-          const html = await response.text();
           if (BLOCK_PATTERNS.test(html.slice(0, 180_000))) {
             lastState = "blocked"; lastMessage = "антибот / captcha"; break;
           }
@@ -630,18 +656,24 @@ export async function searchSource(source: LiveSource, query: string, phase: Rou
   return result;
 }
 
-async function runPool<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
-  const results = new Array<R>(items.length);
+async function runPool<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>, deadlineAt?: number): Promise<R[]> {
+  const results = new Array<R | undefined>(items.length);
   let cursor = 0;
   const runners = Array.from({ length: Math.max(1, Math.min(limit, items.length || 1)) }, async () => {
     while (true) {
+      if (deadlineAt && Date.now() >= deadlineAt - 300) return;
       const index = cursor++;
       if (index >= items.length) return;
-      results[index] = await worker(items[index]);
+      try {
+        results[index] = await worker(items[index]);
+      } catch {
+        // One connector must never reject the whole market wave. searchSource normally
+        // returns an error status itself; this guard handles unexpected parser/runtime faults.
+      }
     }
   });
   await Promise.all(runners);
-  return results;
+  return results.filter((item): item is R => item !== undefined);
 }
 
 function routerStatus(source: LiveSource, phase: RouterPhase, message: string): SourceSearchStatus {
@@ -660,14 +692,20 @@ function policyDisabledSourceIds() {
   return new Set(String(process.env.SMARTBUY_DISABLED_SOURCES || "").toLowerCase().split(",").map(value => value.trim()).filter(Boolean));
 }
 
-export async function searchUkraineLive(query: string, mode: LiveMode = "stores") {
+export async function searchUkraineLive(query: string, mode: LiveMode = "stores", options: LiveSearchOptions = {}) {
   const allRelevant = automaticLiveSources.filter(source => mode === "all" || (mode === "private" ? source.sellerType === "private" : source.sellerType === "store"));
   const disabledIds = policyDisabledSourceIds();
   const relevant = allRelevant.filter(source => !disabledIds.has(source.id.toLowerCase()));
+  const started = Date.now();
+  const defaultBudget = mode === "private" ? 9_000 : mode === "all" ? 18_000 : 16_000;
+  const configuredBudget = Math.max(5_000, Math.min(Number(process.env.SMARTBUY_UKRAINE_TOTAL_TIMEOUT_MS || defaultBudget), 22_000));
+  const globalDeadline = Math.min(started + configuredBudget, options.deadlineAt || Number.POSITIVE_INFINITY);
+  const remainingGlobal = () => Math.max(0, globalDeadline - Date.now());
   if (process.env.SMARTBUY_LIVE_FETCH_ENABLED === "false") {
     return {
       offers: [] as Offer[],
       statuses: allRelevant.map(source => routerStatus(source, "not-selected", disabledIds.has(source.id.toLowerCase()) ? "вимкнено політикою джерел" : "live fetch вимкнено")),
+      partial: false,
     };
   }
 
@@ -696,7 +734,7 @@ export async function searchUkraineLive(query: string, mode: LiveMode = "stores"
 
   const primarySources = [...stable, ...primaryProbes];
   const concurrency = Math.max(1, Math.min(Number(process.env.SMARTBUY_SOURCE_CONCURRENCY || 4), 6));
-  const primaryResults = await runPool<LiveSource, SourceResult>(primarySources, concurrency, source => searchSource(source, query, "primary"));
+  const primaryResults = await runPool<LiveSource, SourceResult>(primarySources, concurrency, source => searchSource(source, query, "primary", { deadlineAt: globalDeadline }), globalDeadline);
   const primaryOfferCount = primaryResults.reduce((sum, item) => sum + item.offers.length, 0);
 
   const defaultTarget = mode === "private" ? 4 : 8;
@@ -704,10 +742,13 @@ export async function searchUkraineLive(query: string, mode: LiveMode = "stores"
   const remainingProbeBudget = Math.max(0, probeLimit - primaryProbes.length);
   const usedProbeIds = new Set(primaryProbes.map(source => source.id));
   const expansionCandidates = eligibleProbes.filter(source => !usedProbeIds.has(source.id));
-  const shouldExpand = probesEnabled && primaryOfferCount < targetOffers && remainingProbeBudget > 0;
-  const expansionSources = shouldExpand ? expansionCandidates.slice(0, remainingProbeBudget) : [];
+  const shouldExpand = probesEnabled && primaryOfferCount < targetOffers && remainingProbeBudget > 0 && remainingGlobal() > 1_400;
+  // Do not start a second wave that cannot finish inside the request budget. One batch
+  // is enough near the deadline; extra connectors remain available as direct links.
+  const maxExpansionByTime = remainingGlobal() > 6_500 ? remainingProbeBudget : Math.min(remainingProbeBudget, concurrency);
+  const expansionSources = shouldExpand ? expansionCandidates.slice(0, maxExpansionByTime) : [];
   const expandedResults = expansionSources.length
-    ? await runPool<LiveSource, SourceResult>(expansionSources, concurrency, source => searchSource(source, query, "expanded"))
+    ? await runPool<LiveSource, SourceResult>(expansionSources, concurrency, source => searchSource(source, query, "expanded", { deadlineAt: globalDeadline }), globalDeadline)
     : [];
 
   const settled = [...primaryResults, ...expandedResults];
@@ -715,6 +756,10 @@ export async function searchUkraineLive(query: string, mode: LiveMode = "stores"
   const coolingIds = new Set(coolingProbes.map(source => source.id));
   const eligibleIds = new Set(eligibleProbes.map(source => source.id));
   const enoughAfterPrimary = primaryOfferCount >= targetOffers;
+  const finalOfferCount = settled.reduce((sum, item) => sum + item.offers.length, 0);
+  const attemptedIds = new Set(settled.map(item => item.status.id));
+  const unrunEligible = eligibleProbes.some(source => !attemptedIds.has(source.id));
+  const budgetExhausted = remainingGlobal() <= 700 && unrunEligible && finalOfferCount < targetOffers;
 
   const statuses: SourceSearchStatus[] = allRelevant.map(source => {
     if (disabledIds.has(source.id.toLowerCase())) return routerStatus(source, "not-selected", "вимкнено політикою джерел");
@@ -723,6 +768,7 @@ export async function searchUkraineLive(query: string, mode: LiveMode = "stores"
     if (!probesEnabled && source.tier === "probe") return routerStatus(source, "not-selected", "пробні джерела вимкнені");
     if (coolingIds.has(source.id)) return routerStatus(source, "cooldown", routerCooldownMessage(source) || "адаптивна пауза після нестабільних відповідей");
     if (source.tier === "probe" && eligibleIds.has(source.id)) {
+      if (budgetExhausted) return routerStatus(source, "not-selected", "загальний бюджет пошуку завершився; часткові результати вже повернено");
       if (enoughAfterPrimary) return routerStatus(source, "not-selected", `адаптивний роутер: уже є ${primaryOfferCount} релевантних пропозицій`);
       if (probeLimit <= primaryProbes.length + expansionSources.length) return routerStatus(source, "not-selected", "не потрапило в ліміт пробної хвилі");
       return routerStatus(source, "not-selected", "не знадобилось у цій хвилі");
@@ -730,7 +776,7 @@ export async function searchUkraineLive(query: string, mode: LiveMode = "stores"
     return routerStatus(source, "not-selected", "не запускалось");
   });
 
-  return { offers: settled.flatMap(item => item.offers), statuses };
+  return { offers: settled.flatMap(item => item.offers), statuses, partial: budgetExhausted };
 }
 
 

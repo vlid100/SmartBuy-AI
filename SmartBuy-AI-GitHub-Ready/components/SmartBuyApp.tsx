@@ -1014,7 +1014,7 @@ export default function SmartBuyApp() {
     const controller = new AbortController();
     searchAbortRef.current = controller;
     const sequence = ++searchSequenceRef.current;
-    const searchTimeoutMs = 40000;
+    const searchTimeoutMs = 50000;
     const timeout = window.setTimeout(() => controller.abort(), searchTimeoutMs);
 
     setLoading(true);
@@ -1058,7 +1058,7 @@ export default function SmartBuyApp() {
       const aborted = error instanceof DOMException && error.name === "AbortError";
       recordClientIssue(aborted ? "search_timeout" : "search_error", error);
       setClientIssues(readClientDiagnosticLog());
-      setWarning(aborted ? "Пошук перевищив безпечний час очікування і був зупинений. Повільні джерела мають власні тайм-аути, тому повтори пошук — швидкі джерела не повинні чекати на один проблемний сайт." : "Не вдалося виконати пошук. Перевір підключення й спробуй ще раз.");
+      setWarning(aborted ? "Сервер не відповів у резервні 50 секунд. У v5.0.2 основний пошук має завершуватись значно раніше й повертати часткові результати без очікування повільних джерел. Спробуй повторити запит." : "Не вдалося виконати пошук. Перевір підключення й спробуй ще раз.");
     } finally {
       window.clearTimeout(timeout);
       if (sequence === searchSequenceRef.current) {
@@ -2063,7 +2063,7 @@ export default function SmartBuyApp() {
       </header>
 
       {tab !== "diagnostics" && <section className="hero" id="search">
-        <div className="eyebrow"><Sparkles size={15}/> SmartBuy AI v5.0.1 · Search Stability Fix</div>
+        <div className="eyebrow"><Sparkles size={15}/> SmartBuy AI v5.0.2 · Partial Results & Timeout Fix</div>
         <h1>Знайди потрібну річ.<br/><span>Порівняй увесь ринок.</span></h1>
         <p>Українські магазини, приватні оголошення та закордонні майданчики в одному місці. SmartBuy показує автоматично підтверджені ціни окремо від прямих пошуків, щоб не вигадувати дані.</p>
 
@@ -2149,7 +2149,7 @@ export default function SmartBuyApp() {
         {tab === "search" && (
           <>
             <div className="sourceStatus marketStatus">
-              <div><BadgeCheck size={18}/><b>SmartBuy AI v5.0.1</b><span>{provider}</span></div>
+              <div><BadgeCheck size={18}/><b>SmartBuy AI v5.0.2</b><span>{provider}</span></div>
               <p><Info size={15}/> Зелені ціни — автоматично підтверджені. Adaptive Router ставить на перше місце джерела, які реально відповідають, розширює пошук лише коли потрібно й не обходить захист сайтів.</p>
             </div>
 
@@ -2208,7 +2208,7 @@ export default function SmartBuyApp() {
 
             {searched && searchQuality && (
               <section className="searchQualityCard">
-                <div className="searchQualityHead"><div><BadgeCheck size={17}/><span>Якість групування</span><b>{searchQuality.averageGroupingConfidence || 0}%</b></div><small>v5.0.1 Variant + Seller Guard</small></div>
+                <div className="searchQualityHead"><div><BadgeCheck size={17}/><span>Якість групування</span><b>{searchQuality.averageGroupingConfidence || 0}%</b></div><small>v5.0.2 Variant + Timeout Guard</small></div>
                 <div className="searchQualityGrid">
                   <div><span>Сирих пропозицій</span><b>{searchQuality.rawOfferCount}</b></div>
                   <div><span>Унікальних</span><b>{searchQuality.uniqueOfferCount}</b><small>{searchQuality.duplicateOffersRemoved ? `-${searchQuality.duplicateOffersRemoved} дублів` : "без дублів"}</small></div>
@@ -2238,7 +2238,7 @@ export default function SmartBuyApp() {
             {sourceLinks.length > 0 && (
               <section className="sourceLauncher">
                 <div className="sourceLauncherHead">
-                  <div><h3>Де SmartBuy шукає цей товар</h3><p>v5.0.1 стабілізує пошук; v5.0 додає International Live, посилені OLX/Rozetka конектори, seller data, точніший Variant Guard за кольором/SKU/регіоном і production-захист. Fair Price, Adaptive Router, Query Expansion та Seller Decision Engine залишаються.</p></div>
+                  <div><h3>Де SmartBuy шукає цей товар</h3><p>v5.0.2 повертає часткові результати без очікування повільних джерел; v5.0 додає International Live, посилені OLX/Rozetka конектори, seller data, точніший Variant Guard за кольором/SKU/регіоном і production-захист. Fair Price, Adaptive Router, Query Expansion та Seller Decision Engine залишаються.</p></div>
                   <span>{sourceLinks.filter(s => s.access === "live").length} стабільні · {sourceLinks.filter(s => s.access === "probe").length} пробні · {sourceLinks.filter(s => s.access === "direct").length} прямі</span>
                 </div>
 
@@ -2397,7 +2397,7 @@ export default function SmartBuyApp() {
             </div>
 
             <div className="diagnosticSummaryGrid">
-              <div><Server size={17}/><span>Версія</span><b>{diagnostics?.version || "5.0.1"}</b><small>{diagnostics?.environment || "—"}</small></div>
+              <div><Server size={17}/><span>Версія</span><b>{diagnostics?.version || "5.0.2"}</b><small>{diagnostics?.environment || "—"}</small></div>
               <div><Database size={17}/><span>Supabase</span><b>{diagnostics?.cloudConfigured ? "Підключено" : diagnostics ? "Не налаштовано" : "—"}</b><small>ключі не показуються</small></div>
               <div><Wifi size={17}/><span>Інтернет</span><b>{clientRuntime ? (clientRuntime.online ? "Online" : "Offline") : "—"}</b><small>{clientRuntime?.serviceWorker === "active" ? "Service Worker активний" : clientRuntime?.serviceWorker === "supported" ? "Service Worker підтримується" : "Service Worker недоступний"}</small></div>
               <div><Bell size={17}/><span>Браузерні сповіщення</span><b>{clientRuntime?.notification === "granted" ? "Дозволені" : clientRuntime?.notification === "denied" ? "Заблоковані" : clientRuntime?.notification === "default" ? "Не запитані" : "Недоступні"}</b><small>{clientRuntime?.installed ? "PWA встановлена" : "веб-режим"}</small></div>
@@ -3020,7 +3020,7 @@ export default function SmartBuyApp() {
       </div>}
 
 
-      <footer><div className="brand"><div className="logo">S</div><span>SmartBuy AI</span></div><p>v5.0.1 · Search Stability · International Live · Web Push · Seller Signals · Variant Guard · Production Hardening. · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></p></footer>
+      <footer><div className="brand"><div className="logo">S</div><span>SmartBuy AI</span></div><p>v5.0.2 · Partial Results · Fast Search · International Live · Web Push · Seller Signals · Variant Guard · Production Hardening. · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></p></footer>
     </main>
   );
 }

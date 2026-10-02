@@ -35,6 +35,7 @@ const required = [
   'app/sitemap.ts',
   'supabase/v5.0_production.sql',
   'supabase/update_to_latest.sql',
+  'scripts/search-stability-audit.mjs',
   'vercel.json',
 ];
 const missing = required.filter(file => !fs.existsSync(path.join(root, file)));
@@ -45,8 +46,8 @@ if (missing.length) {
 }
 
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-if (pkg.version !== '5.0.1') {
-  console.error(`SmartBuy smoke-check: package version must be 5.0.1, got ${pkg.version}`);
+if (pkg.version !== '5.0.2') {
+  console.error(`SmartBuy smoke-check: package version must be 5.0.2, got ${pkg.version}`);
   process.exit(1);
 }
 
@@ -76,9 +77,12 @@ if (!typesSource.includes('\"assistedImport\"') || !typesSource.includes('Produc
 
 const appSource = fs.readFileSync(path.join(root, 'components/SmartBuyApp.tsx'), 'utf8');
 const liveMarketSource = fs.readFileSync(path.join(root, 'lib/live-market.ts'), 'utf8');
+const searchSource = fs.readFileSync(path.join(root, 'lib/search.ts'), 'utf8');
+const persistenceSource = fs.readFileSync(path.join(root, 'lib/persistence.ts'), 'utf8');
+const matchingSource = fs.readFileSync(path.join(root, 'lib/matching.ts'), 'utf8');
 const searchRouteSource = fs.readFileSync(path.join(root, 'app/api/search/route.ts'), 'utf8');
-if (!appSource.includes('const searchTimeoutMs = 40000') || !appSource.includes('setCoverage({ totalOffers: 0') || !liveMarketSource.includes('SMARTBUY_SOURCE_TOTAL_TIMEOUT_MS') || !liveMarketSource.includes('SMARTBUY_PRIORITY_SOURCE_TOTAL_TIMEOUT_MS') || !internationalSource.includes('SMARTBUY_INTERNATIONAL_TOTAL_TIMEOUT_MS') || !searchRouteSource.includes('export const maxDuration = 45')) {
-  console.error('SmartBuy smoke-check: v5.0.1 search stability guards are incomplete.');
+if (!appSource.includes('const searchTimeoutMs = 50000') || !appSource.includes('setCoverage({ totalOffers: 0') || !liveMarketSource.includes('fetchPageWithTimeout') || !liveMarketSource.includes('SMARTBUY_UKRAINE_TOTAL_TIMEOUT_MS') || !internationalSource.includes('SMARTBUY_INTERNATIONAL_WAVE_TIMEOUT_MS') || !searchSource.includes('Promise.allSettled') || searchSource.includes('await snapshotProducts') || !persistenceSource.includes('upsert(productRows') || !matchingSource.includes('макбук: "macbook"') || !searchRouteSource.includes('after(async ()') || !searchRouteSource.includes('SMARTBUY_SEARCH_ROUTE_TIMEOUT_MS') || !searchRouteSource.includes('export const maxDuration = 45')) {
+  console.error('SmartBuy smoke-check: v5.0.2 partial-results / timeout guards are incomplete.');
   process.exit(1);
 }
 

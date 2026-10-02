@@ -36,7 +36,7 @@ must("supabase/v5.0_production.sql", ["smartbuy_push_subscriptions", "smartbuy_s
 must(".env.example", ["WEB_PUSH_PUBLIC_KEY", "WEB_PUSH_PRIVATE_KEY", "SMARTBUY_DISABLED_SOURCES"]);
 
 const pkg = JSON.parse(read("package.json"));
-if (pkg.version !== "5.0.1") throw new Error(`package version is ${pkg.version}`);
+if (pkg.version !== "5.0.2") throw new Error(`package version is ${pkg.version}`);
 if (!pkg.dependencies?.["web-push"]) throw new Error("web-push dependency missing");
 
-console.log("SmartBuy v5.0.1 feature-audit OK · all requested production blocks are wired");
+console.log("SmartBuy v5.0.2 feature-audit OK · all requested production blocks are wired");

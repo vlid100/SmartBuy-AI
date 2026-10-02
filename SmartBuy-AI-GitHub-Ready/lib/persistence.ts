@@ -18,20 +18,29 @@ function compactProduct(product: Product) {
 
 export async function snapshotProducts(products: Product[]) {
   const db = getSupabaseAdmin();
-  if (!db || products.length === 0) return { cloud: false };
+  const batch = products.slice(0, 24);
+  if (!db || batch.length === 0) return { cloud: false };
 
   try {
-    for (const product of products.slice(0, 24)) {
-      const { data: existing } = await db
-        .from("smartbuy_products")
-        .select("last_best_price,product_data")
-        .eq("product_key", product.id)
-        .maybeSingle();
-      const previousBestPrice = Number(existing?.last_best_price || product.bestPrice);
+    const now = Date.now();
+    const nowIso = new Date(now).toISOString();
+    const keys = batch.map(product => product.id);
+
+    // v5.0.2: one read + one upsert for the whole result set. The old implementation
+    // did up to four Supabase requests per product in a serial loop and could add tens
+    // of seconds to /api/search after live results had already been found.
+    const { data: existingRows } = await db
+      .from("smartbuy_products")
+      .select("product_key,last_best_price")
+      .in("product_key", keys);
+    const existingByKey = new Map<string, number>((existingRows || []).map((row: { product_key: string; last_best_price: number | null }) => [row.product_key, Number(row.last_best_price || 0)] as [string, number]));
+
+    const productRows = batch.map(product => {
+      const previousBestPrice = existingByKey.get(product.id) || product.bestPrice;
       const productForStorage: Product = {
         ...product,
         tracking: product.tracking || {
-          lastCheckedAt: new Date().toISOString(),
+          lastCheckedAt: nowIso,
           status: "ok",
           message: "Оновлено під час пошуку SmartBuy.",
           previousBestPrice,
@@ -42,36 +51,46 @@ export async function snapshotProducts(products: Product[]) {
           matchedTitle: product.title,
         },
       };
-      await db.from("smartbuy_products").upsert({
+      return {
         product_key: product.id,
         title: product.title,
         category: product.category,
         image_url: product.imageUrl || null,
         last_best_price: product.bestPrice,
         product_data: compactProduct(productForStorage),
-        updated_at: new Date().toISOString(),
-      }, { onConflict: "product_key" });
+        updated_at: nowIso,
+      };
+    });
+    const { error: productError } = await db.from("smartbuy_products").upsert(productRows, { onConflict: "product_key" });
+    if (productError) return { cloud: false };
 
-      const { data: latest } = await db
-        .from("smartbuy_price_history")
-        .select("best_price,captured_at")
-        .eq("product_key", product.id)
-        .order("captured_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
+    // We only need recent history to decide whether a new point is necessary. This keeps
+    // the query bounded even after months of price tracking.
+    const recentSince = new Date(now - SIX_HOURS_MS).toISOString();
+    const { data: recentRows } = await db
+      .from("smartbuy_price_history")
+      .select("product_key,best_price,captured_at")
+      .in("product_key", keys)
+      .gte("captured_at", recentSince)
+      .order("captured_at", { ascending: false });
 
-      const latestAt = latest?.captured_at ? new Date(latest.captured_at).getTime() : 0;
-      const priceChanged = Number(latest?.best_price || 0) !== Math.round(product.bestPrice);
-      if (!latest || priceChanged || Date.now() - latestAt >= SIX_HOURS_MS) {
-        await db.from("smartbuy_price_history").insert({
-          product_key: product.id,
-          best_price: product.bestPrice,
-          source_count: new Set(product.offers.map(o => o.marketplace)).size,
-          offer_count: product.offers.length,
-          captured_at: new Date().toISOString(),
-        });
-      }
+    const latestRecent = new Map<string, { best_price: number; captured_at: string }>();
+    for (const row of (recentRows || []) as { product_key: string; best_price: number | null; captured_at: string }[]) {
+      if (!latestRecent.has(row.product_key)) latestRecent.set(row.product_key, { best_price: Number(row.best_price || 0), captured_at: row.captured_at });
     }
+    const historyRows = batch.flatMap(product => {
+      const latest = latestRecent.get(product.id);
+      const priceChanged = !latest || Math.round(latest.best_price) !== Math.round(product.bestPrice);
+      if (latest && !priceChanged) return [];
+      return [{
+        product_key: product.id,
+        best_price: product.bestPrice,
+        source_count: new Set(product.offers.map(o => o.marketplace)).size,
+        offer_count: product.offers.length,
+        captured_at: nowIso,
+      }];
+    });
+    if (historyRows.length) await db.from("smartbuy_price_history").insert(historyRows);
     return { cloud: true };
   } catch {
     return { cloud: false };

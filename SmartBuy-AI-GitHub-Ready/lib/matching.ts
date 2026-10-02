@@ -24,7 +24,8 @@ const COUNTERFEIT_TERMS = new Set([
 ]);
 
 const BRAND_ALIASES: Record<string, string> = {
-  айфон: "iphone", iphone: "iphone", apple: "apple",
+  айфон: "iphone", iphone: "iphone", apple: "apple", епл: "apple",
+  макбук: "macbook", macbook: "macbook",
   самсунг: "samsung", samsung: "samsung",
   сяомі: "xiaomi", ксяомі: "xiaomi", xiaomi: "xiaomi",
   редмі: "redmi", redmi: "redmi",
@@ -169,6 +170,10 @@ function familySignals(value: string) {
   const add = (v?: string) => { if (v) out.add(v); };
 
   for (const match of text.matchAll(/\biphone\s*(\d{1,2}[a-z]?)\b/gi)) add(`iphone:${match[1].toLowerCase()}`);
+  for (const match of text.matchAll(/\bmacbook\s+(air|pro)\s*(\d{2})(?:[.,]\d)?\b/gi)) add(`macbook:${match[1].toLowerCase()}:${match[2]}`);
+  if (/\bmacbook\b/i.test(text)) {
+    for (const match of text.matchAll(/\bm([1-9])(?:\s*(pro|max|ultra))?\b/gi)) add(`macbookchip:m${match[1]}${match[2] ? `-${match[2].toLowerCase()}` : ""}`);
+  }
   for (const match of text.matchAll(/\bgalaxy\s*([sazm]\d{1,3}(?:\s*(?:ultra|plus|fe))?)\b/gi)) add(`galaxy:${match[1].replace(/\s+/g, "").toLowerCase()}`);
   for (const match of text.matchAll(/\b(?:redmi|poco)\s*([a-z]*\d+[a-z0-9-]*)\b/gi)) add(`${match[0].split(/\s+/)[0].toLowerCase()}:${match[1].toLowerCase()}`);
   for (const match of text.matchAll(/\b(loq|legion|ideapad|thinkpad|vivobook)\s*(\d{2})(?:[a-z][a-z0-9-]*)?\b/gi)) add(`${match[1].toLowerCase()}:${match[2]}`);
@@ -354,6 +359,10 @@ const QUERY_NOISE = new Set([
 export function normalizeSearchQuery(value: string) {
   const prepared = value
     .replace(/\bi[\s-]*phone\b/gi, "iphone")
+    .replace(/мак[\s-]*бук/giu, "macbook")
+    .replace(/mac[\s-]*book/gi, "macbook")
+    .replace(/macbook\s+ейр/giu, "macbook air")
+    .replace(/macbook\s+про/giu, "macbook pro")
     .replace(/\bpro[\s-]*max\b/gi, "pro max")
     .replace(/\btype[\s-]*c\b/gi, "type c");
   const normalized = canonical(prepared)
@@ -374,6 +383,8 @@ export type ProductIdentityMeta = {
 function readableSignal(signal: string) {
   if (signal.startsWith("iphone:")) return `iPhone ${signal.slice(7)}`;
   if (signal.startsWith("galaxy:")) return `Galaxy ${signal.slice(7).toUpperCase()}`;
+  if (signal.startsWith("macbook:")) return signal.replace("macbook:", "MacBook ").replace(":", " ");
+  if (signal.startsWith("macbookchip:")) return signal.slice(12).toUpperCase();
   if (signal.startsWith("model:")) return signal.slice(6).toUpperCase();
   if (signal.startsWith("ram:")) return `RAM ${signal.slice(4).toUpperCase()}`;
   if (/^\d+gb$/.test(signal)) return signal.toUpperCase();
