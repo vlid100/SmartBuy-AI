@@ -1,6 +1,6 @@
 {
   "name": "smartbuy-ai",
-  "version": "6.0.1",
+  "version": "6.0.2",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -13,7 +13,8 @@
     "audit": "node scripts/feature-audit.mjs",
     "stability": "node scripts/search-stability-audit.mjs",
     "discovery": "node scripts/discovery-search-audit.mjs",
-    "price-audit": "node --experimental-strip-types scripts/price-parsing-audit.mjs"
+    "price-audit": "node --experimental-strip-types scripts/price-parsing-audit.mjs",
+    "diagnostics-audit": "node scripts/diagnostics-audit.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",

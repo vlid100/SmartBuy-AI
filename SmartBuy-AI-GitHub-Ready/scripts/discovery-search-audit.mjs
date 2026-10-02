@@ -23,4 +23,4 @@ if (failed.length) {
   for (const [, label] of failed) console.error(`Discovery audit failed: ${label}`);
   process.exit(1);
 }
-console.log("SmartBuy v6.0.1 discovery-search audit OK · natural language + query reduction + international + web fallback");
+console.log("SmartBuy v6.0.2 discovery-search audit OK · natural language + query reduction + international + web fallback");

@@ -20,4 +20,4 @@ if (!suspiciousUnqualifiedPrice("Sonnet 5/450x400", "450", 450)) throw new Error
 if (!suspiciousUnqualifiedPrice("Sonnet 10/950x500", "10", 10)) throw new Error("model number 10 must be suspicious");
 if (suspiciousUnqualifiedPrice("Sonnet 5/450x400", "4927", 4927)) throw new Error("real unrelated price 4927 must not be suspicious");
 
-console.log("SmartBuy v6.0.1 price-parsing audit OK · dimensions/model numbers cannot become prices");
+console.log("SmartBuy v6.0.2 price-parsing audit OK · dimensions/model numbers cannot become prices");

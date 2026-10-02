@@ -4,7 +4,7 @@ import { sourceCapabilitySummary, sourceCounts } from "@/lib/source-registry";
 import { searchSource, stableLiveSources } from "@/lib/live-market";
 import { pushConfigured } from "@/lib/push";
 
-const VERSION = "6.0.1";
+const VERSION = "6.0.2";
 
 const requiredTables = [
   ["smartbuy_products", "product_key"],
@@ -29,14 +29,18 @@ function safeError(error: unknown) {
 async function checkSupabaseTables(): Promise<DiagnosticCheck> {
   const config = getSupabaseServerConfig();
   if (!config.configured) {
+    const problems = [
+      !config.hasUrl ? "немає SUPABASE_URL" : !config.urlValid ? "SUPABASE_URL має неправильний формат" : "",
+      !config.hasServerKey ? "немає серверного ключа" : !config.keyLooksValid ? `неправильний формат ${config.keySource === "service_role" ? "SUPABASE_SERVICE_ROLE_KEY" : "SUPABASE_SECRET_KEY"}` : "",
+    ].filter(Boolean);
     return {
-      id: "supabase", label: "Supabase", status: "warn",
-      summary: "Хмарний режим не налаштований",
-      detail: `URL: ${config.hasUrl ? "є" : "немає"} · серверний ключ: ${config.hasServerKey ? "є" : "немає"}. Локальні функції можуть працювати без хмари.`,
+      id: "supabase", label: "Supabase", status: "error",
+      summary: "Серверне підключення Supabase налаштовано неправильно",
+      detail: `${problems.join(" · ") || "Перевір змінні Vercel"}. Рекомендовано SUPABASE_URL + SUPABASE_SECRET_KEY (sb_secret_...).`,
     };
   }
   const db = getSupabaseAdmin();
-  if (!db) return { id: "supabase", label: "Supabase", status: "error", summary: "Не вдалося створити серверне підключення" };
+  if (!db) return { id: "supabase", label: "Supabase", status: "error", summary: "Не вдалося створити серверне підключення", detail: "Перевір SUPABASE_URL і SUPABASE_SECRET_KEY у Vercel та зроби Redeploy." };
   const started = Date.now();
   const results = await Promise.all(requiredTables.map(async ([table, column]) => {
     try {

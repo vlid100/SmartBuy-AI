@@ -2066,7 +2066,7 @@ export default function SmartBuyApp() {
       </header>
 
       {tab !== "diagnostics" && <section className="hero" id="search">
-        <div className="eyebrow"><Sparkles size={15}/> SmartBuy AI v6.0.1 · Verified Price Parsing</div>
+        <div className="eyebrow"><Sparkles size={15}/> SmartBuy AI v6.0.2 · Verified Price Parsing</div>
         <h1>Знайди потрібну річ.<br/><span>Порівняй увесь ринок.</span></h1>
         <p>Українські магазини, приватні оголошення та закордонні майданчики в одному місці. SmartBuy показує автоматично підтверджені ціни окремо від прямих пошуків, щоб не вигадувати дані.</p>
 
@@ -2152,7 +2152,7 @@ export default function SmartBuyApp() {
         {tab === "search" && (
           <>
             <div className="sourceStatus marketStatus">
-              <div><BadgeCheck size={18}/><b>SmartBuy AI v6.0.1</b><span>{provider}</span></div>
+              <div><BadgeCheck size={18}/><b>SmartBuy AI v6.0.2</b><span>{provider}</span></div>
               <p><Info size={15}/> Зелені ціни — автоматично підтверджені. Adaptive Router ставить на перше місце джерела, які реально відповідають, розширює пошук лише коли потрібно й не обходить захист сайтів.</p>
             </div>
 
@@ -2211,7 +2211,7 @@ export default function SmartBuyApp() {
 
             {searched && searchQuality && (
               <section className="searchQualityCard">
-                <div className="searchQualityHead"><div><BadgeCheck size={17}/><span>Якість групування</span><b>{searchQuality.averageGroupingConfidence || 0}%</b></div><small>v6.0.1 Discovery + Price Guard</small></div>
+                <div className="searchQualityHead"><div><BadgeCheck size={17}/><span>Якість групування</span><b>{searchQuality.averageGroupingConfidence || 0}%</b></div><small>v6.0.2 Discovery + Price Guard</small></div>
                 <div className="searchQualityGrid">
                   <div><span>Сирих пропозицій</span><b>{searchQuality.rawOfferCount}</b></div>
                   <div><span>Унікальних</span><b>{searchQuality.uniqueOfferCount}</b><small>{searchQuality.duplicateOffersRemoved ? `-${searchQuality.duplicateOffersRemoved} дублів` : "без дублів"}</small></div>
@@ -2400,7 +2400,7 @@ export default function SmartBuyApp() {
             </div>
 
             <div className="diagnosticSummaryGrid">
-              <div><Server size={17}/><span>Версія</span><b>{diagnostics?.version || "6.0.1"}</b><small>{diagnostics?.environment || "—"}</small></div>
+              <div><Server size={17}/><span>Версія</span><b>{diagnostics?.version || "6.0.2"}</b><small>{diagnostics?.environment || "—"}</small></div>
               <div><Database size={17}/><span>Supabase</span><b>{diagnostics?.cloudConfigured ? "Підключено" : diagnostics ? "Не налаштовано" : "—"}</b><small>ключі не показуються</small></div>
               <div><Wifi size={17}/><span>Інтернет</span><b>{clientRuntime ? (clientRuntime.online ? "Online" : "Offline") : "—"}</b><small>{clientRuntime?.serviceWorker === "active" ? "Service Worker активний" : clientRuntime?.serviceWorker === "supported" ? "Service Worker підтримується" : "Service Worker недоступний"}</small></div>
               <div><Bell size={17}/><span>Браузерні сповіщення</span><b>{clientRuntime?.notification === "granted" ? "Дозволені" : clientRuntime?.notification === "denied" ? "Заблоковані" : clientRuntime?.notification === "default" ? "Не запитані" : "Недоступні"}</b><small>{clientRuntime?.installed ? "PWA встановлена" : "веб-режим"}</small></div>
@@ -3029,7 +3029,7 @@ export default function SmartBuyApp() {
       </div>}
 
 
-      <footer><div className="brand"><div className="logo">S</div><span>SmartBuy AI</span></div><p>v6.0.1 · Discovery Search · Verified Price Parsing · Ukraine + International · Partial Results · Web Push · Variant Guard. · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></p></footer>
+      <footer><div className="brand"><div className="logo">S</div><span>SmartBuy AI</span></div><p>v6.0.2 · Discovery Search · Verified Price Parsing · Ukraine + International · Partial Results · Web Push · Variant Guard. · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></p></footer>
     </main>
   );
 }

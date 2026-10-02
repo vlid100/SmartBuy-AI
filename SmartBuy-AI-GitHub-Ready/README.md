@@ -1,4 +1,4 @@
-# SmartBuy AI v6.0.1 — Discovery Search + Verified Price Parsing
+# SmartBuy AI v6.0.2 — Discovery Search + Verified Price Parsing
 
 v6.0 змінює головний принцип пошуку: **спочатку знайти товар, потім підтвердити його ціну та продавця**.
 
@@ -30,7 +30,7 @@ v6.0 змінює головний принцип пошуку: **спочатк
 Дивись `RELEASE_NOTES-v6.0.md`, `.env.example` і `SOURCE_USE.md`.
 
 
-## v6.0.1 Price Guard
+## v6.0.2 Price Guard
 
 - Числа з розмірів/моделей (`450x400`, `950x500`, `30x30`) більше не можуть ставати ціною.
 - Контекстний fallback приймає тільки суми з `₴`, `грн` або `UAH`.
