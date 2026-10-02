@@ -5,6 +5,7 @@ import { sourceConnectorProfile, type ConnectorAdapterKind } from "@/lib/source-
 import { evaluateSearchMatch, evaluateTitleMatch, productIdentityKey, productIdentityMeta, productVariantSignals } from "@/lib/matching";
 import { expandSearchQuery } from "@/lib/query-expansion";
 import { decorateRouterStatus, isCoolingDown, rankSources, recordAndDecorateRouterStatus, routerCooldownMessage, type RouterPhase } from "@/lib/source-router";
+import { parsePriceValue, suspiciousUnqualifiedPrice } from "@/lib/price-parser";
 
 export type LiveSource = {
   id: string;
@@ -51,12 +52,12 @@ const rawLiveSources: LiveSource[] = [
   {
     id: "prom", name: "Prom.ua", sellerType: "store", trusted: true, tier: tierFor("prom"),
     buildUrl: q => `https://prom.ua/ua/search?search_term=${enc(q)}`,
-    selectors: { card: '[data-qaid="product_block"], [data-testid*="product"], article', title: '[data-qaid="product_name"], [data-testid="product-name"], h2, h3', price: '[data-qaid="product_price"], [data-testid="product-price"], [class*="price"]', link: 'a[href]', image: 'img' }
+    selectors: { card: '[data-qaid="product_block"], [data-testid*="product"], article', title: '[data-qaid="product_name"], [data-testid="product-name"], h2, h3', price: '[data-qaid="product_price"], [data-qaid="product_price_value"], [data-testid="product-price"], [itemprop="price"], [data-price], [class*="price"]', link: 'a[href]', image: 'img' }
   },
   {
     id: "bigl", name: "Bigl.ua", sellerType: "store", trusted: true, tier: tierFor("bigl"),
     buildUrl: q => `https://bigl.ua/ua/search?search_term=${enc(q)}`,
-    selectors: { card: '[data-qaid="product_block"], [data-testid*="product"], article', title: '[data-qaid="product_name"], [data-testid="product-name"], h2, h3', price: '[data-qaid="product_price"], [data-testid="product-price"], [class*="price"]', link: 'a[href]', image: 'img' }
+    selectors: { card: '[data-qaid="product_block"], [data-testid*="product"], article', title: '[data-qaid="product_name"], [data-testid="product-name"], h2, h3', price: '[data-qaid="product_price"], [data-qaid="product_price_value"], [data-testid="product-price"], [itemprop="price"], [data-price], [class*="price"]', link: 'a[href]', image: 'img' }
   },
   {
     id: "moyo", name: "MOYO", sellerType: "store", trusted: true, tier: tierFor("moyo"),
@@ -140,21 +141,11 @@ export const probeLiveSources = liveSources.filter(source => probeSourceIds.has(
 export const automaticLiveSources = [...stableLiveSources, ...probeLiveSources];
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 SmartBuyAI/6.0";
-const PRICE_RE = /(?:₴|грн\.?|uah)?\s*([0-9][0-9\s\u00a0.,]{1,14})\s*(?:₴|грн\.?|uah)?/i;
 const BLOCK_PATTERNS = /captcha|cf-chl-|attention required[^<]{0,80}cloudflare|access denied|verify you are human|перевірте, що ви людина|доступ заборонено|unusual traffic|robot check/i;
 const STOP = new Set(["купити","ціна","ціни","новий","нова","нове","бв","б/в","бу","україна","україні","доставка","товар","смартфон","ноутбук","телефон","оригінал"]);
 const sourceCache = new Map<string, CacheEntry>();
 
 function cleanText(value?: string | null) { return (value || "").replace(/\s+/g, " ").trim(); }
-function parsePrice(value?: string | number | null): number | null {
-  if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.round(value);
-  const text = cleanText(String(value || ""));
-  const match = text.match(PRICE_RE);
-  if (!match) return null;
-  const digits = match[1].replace(/[\s\u00a0]/g, "").replace(/,(?=\d{1,2}$)/, ".").replace(/\.(?=\d{3}(?:\D|$))/g, "");
-  const number = Number(digits);
-  return Number.isFinite(number) && number >= 10 && number <= 20_000_000 ? Math.round(number) : null;
-}
 function parseRating(value: unknown): number | undefined {
   const n = Number(String(value ?? "").replace(",", "."));
   return Number.isFinite(n) && n > 0 && n <= 5 ? Math.round(n * 10) / 10 : undefined;
@@ -258,9 +249,9 @@ function usefulTitle(title: string, query: string) {
   return match.reliable || similarity(t, q) >= 0.36;
 }
 
-function offerFrom(source: LiveSource, baseUrl: string, input: { title?: string; price?: unknown; url?: string; image?: unknown; meta?: string; externalId?: string; productRating?: unknown; reviewCount?: unknown; reviewSnippets?: string[]; sellerName?: unknown; sellerRating?: unknown; sellerReviewCount?: unknown; sellerSince?: unknown; returnPolicy?: unknown; availability?: unknown; delivery?: unknown; warranty?: unknown; verifiedSeller?: unknown; sku?: unknown; color?: unknown; regionVersion?: unknown }): Offer | null {
+function offerFrom(source: LiveSource, baseUrl: string, input: { title?: string; price?: unknown; priceSource?: "structured" | "selector" | "context"; url?: string; image?: unknown; meta?: string; externalId?: string; productRating?: unknown; reviewCount?: unknown; reviewSnippets?: string[]; sellerName?: unknown; sellerRating?: unknown; sellerReviewCount?: unknown; sellerSince?: unknown; returnPolicy?: unknown; availability?: unknown; delivery?: unknown; warranty?: unknown; verifiedSeller?: unknown; sku?: unknown; color?: unknown; regionVersion?: unknown }): Offer | null {
   const title = cleanText(input.title);
-  const price = parsePrice(input.price as string | number | null);
+  const price = parsePriceValue(input.price as string | number | null, input.priceSource === "context" ? "context" : "structured");
   const url = absoluteUrl(input.url, baseUrl);
   if (!title || !price || !url) return null;
   return {
@@ -273,6 +264,7 @@ function offerFrom(source: LiveSource, baseUrl: string, input: { title?: string;
     sellerType: source.sellerType,
     condition: conditionFrom(title, source),
     price,
+    priceSource: input.priceSource || "structured",
     currency: "UAH",
     delivery: cleanText(String(input.delivery || "")) || (source.sellerType === "private" ? "уточнити в оголошенні" : "дивись на сайті"),
     warranty: cleanText(String(input.warranty || "")) || (source.sellerType === "private" ? "уточнити" : "дивись на сайті"),
@@ -306,12 +298,36 @@ function parseCards(html: string, source: LiveSource, baseUrl: string): Offer[] 
     const card = $(element);
     const titleEl = card.find(source.selectors!.title).first();
     const linkEl = card.find(source.selectors!.link).first();
-    const priceEl = card.find(source.selectors!.price).first();
+    const title = cleanText(titleEl.attr("title") || titleEl.text() || linkEl.attr("title") || linkEl.text());
     const imageEl = source.selectors!.image ? card.find(source.selectors!.image).first() : null;
     const metaEl = source.selectors!.meta ? card.find(source.selectors!.meta).first() : null;
+
+    let parsedPrice: number | null = null;
+    // Respect selector priority instead of document order. Specific product-price selectors
+    // must win over broad [class*=price] fallbacks.
+    for (const selector of source.selectors!.price.split(",").map(v => v.trim()).filter(Boolean)) {
+      const candidates = card.find(selector).slice(0, 4).toArray();
+      for (const candidate of candidates) {
+        const priceEl = $(candidate);
+        const attrValue = priceEl.attr("content") || priceEl.attr("data-price") || priceEl.attr("value") || "";
+        const textValue = cleanText(priceEl.text());
+        const candidateRaw = cleanText(attrValue || textValue);
+        const candidatePrice = attrValue
+          ? parsePriceValue(attrValue, "structured")
+          : parsePriceValue(textValue, "price-node");
+        if (candidatePrice === null) continue;
+        if (suspiciousUnqualifiedPrice(title, candidateRaw, candidatePrice)) continue;
+        parsedPrice = candidatePrice;
+        break;
+      }
+      if (parsedPrice !== null) break;
+    }
+
+    if (parsedPrice === null) return;
     const offer = offerFrom(source, baseUrl, {
-      title: titleEl.attr("title") || titleEl.text() || linkEl.attr("title") || linkEl.text(),
-      price: priceEl.attr("content") || priceEl.attr("data-price") || priceEl.text(),
+      title,
+      price: parsedPrice,
+      priceSource: "selector",
       url: linkEl.attr("href"),
       image: imageEl?.attr("src") || imageEl?.attr("data-src") || imageEl?.attr("data-lazy-src") || imageEl?.attr("srcset")?.split(" ")[0],
       meta: metaEl?.text(),
@@ -363,7 +379,7 @@ function parseJsonCandidates(html: string, source: LiveSource, baseUrl: string):
       const seller = objectValue(offersObj.seller) || objectValue(obj.seller) || {};
       const sellerAggregate = aggregateRatingFrom(seller);
       const offer = offerFrom(source, baseUrl, {
-        title: name, price, url,
+        title: name, price, priceSource: "structured", url,
         image: valueAt(obj, ["image", "imageUrl", "photo", "thumbnail", "picture"]),
         externalId: String(valueAt(obj, ["sku", "id", "productId", "externalId"]) || "") || undefined,
         productRating: aggregate.rating,
@@ -401,18 +417,55 @@ function parseJsonCandidates(html: string, source: LiveSource, baseUrl: string):
 function parseGenericAnchors(html: string, source: LiveSource, baseUrl: string): Offer[] {
   const $ = cheerio.load(html);
   const results: Offer[] = [];
+  const explicitPriceSelectors = [
+    '[data-qaid="product_price"]',
+    '[data-qaid="product_price_value"]',
+    '[data-testid="product-price"]',
+    '[itemprop="price"]',
+    '[data-price]',
+    '[class*="price"]',
+    '[id*="price"]',
+  ];
+
   $('a[href]').slice(0, 700).each((_, element) => {
     const link = $(element);
     const title = cleanText(link.attr("title") || link.text());
     if (title.length < 4 || title.length > 220) return;
     const container = link.closest('article, li, [class*="product"], [class*="card"], [class*="item"]').first();
-    const context = cleanText((container.length ? container : link.parent()).text()).slice(0, 900);
-    const price = parsePrice(context);
-    if (!price) return;
-    const image = (container.length ? container : link.parent()).find('img').first();
+    const scope = container.length ? container : link.parent();
+    const context = cleanText(scope.text()).slice(0, 900);
+
+    let price: number | null = null;
+    let priceSource: "selector" | "context" = "context";
+    for (const selector of explicitPriceSelectors) {
+      const nodes = scope.find(selector).slice(0, 5).toArray();
+      for (const node of nodes) {
+        const priceEl = $(node);
+        const attrValue = priceEl.attr("content") || priceEl.attr("data-price") || priceEl.attr("value") || "";
+        const textValue = cleanText(priceEl.text());
+        const raw = cleanText(attrValue || textValue);
+        const candidate = attrValue ? parsePriceValue(attrValue, "structured") : parsePriceValue(textValue, "price-node");
+        if (candidate === null || suspiciousUnqualifiedPrice(title, raw, candidate)) continue;
+        price = candidate;
+        priceSource = "selector";
+        break;
+      }
+      if (price !== null) break;
+    }
+
+    // Context fallback is currency-qualified only. Never turn model numbers, dimensions,
+    // quantities or specifications such as 5/450x400 into a price.
+    if (price === null) {
+      price = parsePriceValue(context, "context");
+      priceSource = "context";
+    }
+    if (price === null) return;
+
+    const image = scope.find('img').first();
     const offer = offerFrom(source, baseUrl, {
       title,
       price,
+      priceSource,
       url: link.attr("href"),
       image: image.attr("src") || image.attr("data-src") || image.attr("data-lazy-src"),
     });
@@ -806,11 +859,15 @@ function offerFingerprint(offer: Offer) {
 function mergeDuplicateOffer(base: Offer, next: Offer): Offer {
   const preferred = (next.matchConfidence || 0) > (base.matchConfidence || 0) ? next : base;
   const secondary = preferred === next ? base : next;
+  const priceRank = (offer: Offer) => offer.priceSource === "structured" ? 3 : offer.priceSource === "selector" ? 2 : offer.priceSource === "context" ? 1 : 0;
+  const baseRank = priceRank(base); const nextRank = priceRank(next);
+  const priceOffer = nextRank > baseRank ? next : baseRank > nextRank ? base : (next.price < base.price ? next : base);
   const reviewSnippets = [...new Set([...(preferred.reviewSnippets || []), ...(secondary.reviewSnippets || [])])].slice(0, 8);
   return {
     ...secondary,
     ...preferred,
-    price: Math.min(base.price, next.price),
+    price: priceOffer.price,
+    priceSource: priceOffer.priceSource,
     title: preferred.title || secondary.title,
     url: preferred.url || secondary.url,
     imageUrl: preferred.imageUrl || secondary.imageUrl,

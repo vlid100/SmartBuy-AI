@@ -1,4 +1,4 @@
-# SmartBuy AI v6.0 — Discovery Search
+# SmartBuy AI v6.0.1 — Discovery Search + Verified Price Parsing
 
 v6.0 змінює головний принцип пошуку: **спочатку знайти товар, потім підтвердити його ціну та продавця**.
 
@@ -28,3 +28,12 @@ v6.0 змінює головний принцип пошуку: **спочатк
 У Vercel можна додати `SMARTBUY_BRAVE_SEARCH_API_KEY`. Без нього SmartBuy використовує best-effort fallback через відкритий веб-пошук. Це не є обов'язковим для запуску.
 
 Дивись `RELEASE_NOTES-v6.0.md`, `.env.example` і `SOURCE_USE.md`.
+
+
+## v6.0.1 Price Guard
+
+- Числа з розмірів/моделей (`450x400`, `950x500`, `30x30`) більше не можуть ставати ціною.
+- Контекстний fallback приймає тільки суми з `₴`, `грн` або `UAH`.
+- JSON-LD/структурована ціна має вищий пріоритет за selector/context fallback.
+- Регресійна перевірка: `npm run price-audit`.
+- Новий SQL у Supabase не потрібен.

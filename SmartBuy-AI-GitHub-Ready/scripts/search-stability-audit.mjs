@@ -25,4 +25,4 @@ assert(persistence.includes("upsert(productRows") && persistence.includes("histo
 assert(matching.includes('макбук: "macbook"') && matching.includes("macbookchip:"), "MacBook Ukrainian alias/generation matching missing");
 assert(types.includes("partial?: boolean") && types.includes("durationMs?: number"), "partial-result API metadata missing");
 
-console.log("SmartBuy v6.0.0 search-stability audit OK · partial results + bounded connectors + non-blocking history");
+console.log("SmartBuy v6.0.1 search-stability audit OK · partial results + bounded connectors + non-blocking history");

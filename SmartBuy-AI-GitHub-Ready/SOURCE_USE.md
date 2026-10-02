@@ -1,4 +1,4 @@
-# SmartBuy source-use guardrails (v6.0)
+# SmartBuy source-use guardrails (v6.0.1)
 
 SmartBuy uses best-effort requests to public search/product pages. It does **not** bypass CAPTCHA, login walls, rate limits, robots challenges or access-control mechanisms. When a source returns 401/403/429, CAPTCHA or an anti-bot page, SmartBuy records the source as blocked and keeps a direct search link instead of inventing data.
 

@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   return NextResponse.json({
-    version: "6.0.0",
+    version: "6.0.1",
     generatedAt: new Date().toISOString(),
     summary: sourceCapabilitySummary(),
     sources: getSourceCapabilityMatrix(),

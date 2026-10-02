@@ -29,6 +29,7 @@ export type Offer = {
   sellerType: SellerType;
   condition: ListingCondition;
   price: number;
+  priceSource?: "structured" | "selector" | "context";
   currency?: string;
   delivery: string;
   warranty: string;

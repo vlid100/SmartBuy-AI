@@ -11,6 +11,7 @@ const required = [
   'components/SmartBuyApp.tsx',
   'components/PwaManager.tsx',
   'lib/live-market.ts',
+  'lib/price-parser.ts',
   'lib/international-market.ts',
   'lib/matching.ts',
   'lib/source-router.ts',
@@ -38,6 +39,7 @@ const required = [
   'supabase/v5.0_production.sql',
   'supabase/update_to_latest.sql',
   'scripts/search-stability-audit.mjs',
+  'scripts/price-parsing-audit.mjs',
   'vercel.json',
 ];
 const missing = required.filter(file => !fs.existsSync(path.join(root, file)));
@@ -48,8 +50,8 @@ if (missing.length) {
 }
 
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-if (pkg.version !== '6.0.0') {
-  console.error(`SmartBuy smoke-check: package version must be 6.0.0, got ${pkg.version}`);
+if (pkg.version !== '6.0.1') {
+  console.error(`SmartBuy smoke-check: package version must be 6.0.1, got ${pkg.version}`);
   process.exit(1);
 }
 
@@ -82,9 +84,10 @@ const liveMarketSource = fs.readFileSync(path.join(root, 'lib/live-market.ts'), 
 const searchSource = fs.readFileSync(path.join(root, 'lib/search.ts'), 'utf8');
 const persistenceSource = fs.readFileSync(path.join(root, 'lib/persistence.ts'), 'utf8');
 const matchingSource = fs.readFileSync(path.join(root, 'lib/matching.ts'), 'utf8');
+const priceParserSource = fs.readFileSync(path.join(root, 'lib/price-parser.ts'), 'utf8');
 const searchRouteSource = fs.readFileSync(path.join(root, 'app/api/search/route.ts'), 'utf8');
-if (!appSource.includes('const searchTimeoutMs = 50000') || !appSource.includes('setCoverage({ totalOffers: 0') || !liveMarketSource.includes('fetchPageWithTimeout') || !liveMarketSource.includes('SMARTBUY_UKRAINE_TOTAL_TIMEOUT_MS') || !internationalSource.includes('SMARTBUY_INTERNATIONAL_WAVE_TIMEOUT_MS') || !searchSource.includes('Promise.allSettled') || searchSource.includes('await snapshotProducts') || !persistenceSource.includes('upsert(productRows') || !matchingSource.includes('макбук: "macbook"') || !searchRouteSource.includes('after(async ()') || !searchRouteSource.includes('SMARTBUY_SEARCH_ROUTE_TIMEOUT_MS') || !searchRouteSource.includes('export const maxDuration = 45')) {
-  console.error('SmartBuy smoke-check: v6.0.0 partial-results / timeout guards are incomplete.');
+if (!appSource.includes('const searchTimeoutMs = 50000') || !appSource.includes('setCoverage({ totalOffers: 0') || !liveMarketSource.includes('fetchPageWithTimeout') || !liveMarketSource.includes('suspiciousUnqualifiedPrice') || !priceParserSource.includes('mode === "context"') || !priceParserSource.includes('titleContainsMatchingDimensionNumber') || !liveMarketSource.includes('SMARTBUY_UKRAINE_TOTAL_TIMEOUT_MS') || !internationalSource.includes('SMARTBUY_INTERNATIONAL_WAVE_TIMEOUT_MS') || !searchSource.includes('Promise.allSettled') || searchSource.includes('await snapshotProducts') || !persistenceSource.includes('upsert(productRows') || !matchingSource.includes('макбук: "macbook"') || !searchRouteSource.includes('after(async ()') || !searchRouteSource.includes('SMARTBUY_SEARCH_ROUTE_TIMEOUT_MS') || !searchRouteSource.includes('export const maxDuration = 45')) {
+  console.error('SmartBuy smoke-check: v6.0.1 partial-results / timeout guards are incomplete.');
   process.exit(1);
 }
 
